@@ -1,0 +1,7 @@
+requests
+beautifulsoup4
+tweepy
+facebook-sdk
+linkedin-api
+google-auth-api
+youtube-api
