@@ -5,10 +5,10 @@ import tweepy
 import facebook
 
 # APIs ke liye keys (Inko .env ya config file me store karna best hoga)
-TWITTER_API_KEY = "your_api_key_here"
-TWITTER_API_SECRET = "your_api_secret_here"
-TWITTER_ACCESS_TOKEN = "your_access_token_here"
-TWITTER_ACCESS_SECRET = "your_access_token_secret_here"
+TWITTER_API_KEY = "t0gZQmMYtneUlP52wqST3frWI"
+TWITTER_API_SECRET = "j2nbtt9DMD6RppGgPyAuNVRrIFT8p5YtthSxZ0LmySHHB71pFJ"
+TWITTER_ACCESS_TOKEN = "1897155138181324801-SPwhqhNUB8i3POtZsN4Jd8sU1L57kh"
+TWITTER_ACCESS_SECRET = "iOflB8uVsuX6Q20n0ZgIvyrzvEF8EF2A5odwNsDk8uRBT"
 FACEBOOK_ACCESS_TOKEN = "your_facebook_app_access_token_here"
 
 # Twitter API Setup
