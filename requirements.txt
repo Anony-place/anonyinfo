@@ -1,7 +1,4 @@
-requests
-beautifulsoup4
-tweepy
-facebook-sdk
-linkedin-api
-google-auth-api
-youtube-api
+tweepy==4.14.0
+beautifulsoup4==4.12.3
+requests==2.31.0
+
