@@ -3,13 +3,19 @@ import requests
 from bs4 import BeautifulSoup
 import tweepy
 import facebook
+import os
+from dotenv import load_dotenv
+import json
 
-# APIs ke liye keys (Inko .env ya config file me store karna best hoga)
-TWITTER_API_KEY =""
-TWITTER_API_SECRET = ""
-TWITTER_ACCESS_TOKEN = ""
-TWITTER_ACCESS_SECRET = ""
-FACEBOOK_ACCESS_TOKEN = ""
+# Load environment variables from .env file
+load_dotenv()
+
+# Get API keys from environment variables
+TWITTER_API_KEY = os.getenv("TWITTER_API_KEY")
+TWITTER_API_SECRET = os.getenv("TWITTER_API_SECRET")
+TWITTER_ACCESS_TOKEN = os.getenv("TWITTER_ACCESS_TOKEN")
+TWITTER_ACCESS_SECRET = os.getenv("TWITTER_ACCESS_SECRET")
+FACEBOOK_ACCESS_TOKEN = os.getenv("FACEBOOK_ACCESS_TOKEN")
 
 # Twitter API Setup
 auth = tweepy.OAuthHandler(TWITTER_API_KEY, TWITTER_API_SECRET)
@@ -54,23 +60,45 @@ def search_facebook(target_name):
     except Exception as e:
         return {"error": f"Facebook search failed: {e}"}
 
+def search_instagram(target_name):
+    """
+    Instagram profile dhoondhega.
+    WARNING: This function uses an unofficial, unauthenticated API endpoint that is subject to change and may break without notice.
+    """
+    url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={target_name}"
+    headers = {
+        "accept": "*/*",
+        "accept-language": "en-US,en;q=0.9",
+        "x-ig-app-id": "936619743392459",
+    }
+    try:
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            data = response.json()['data']['user']
+            return {
+                "biography": data['biography'],
+                "followers": data['edge_followed_by']['count'],
+                "following": data['edge_follow']['count'],
+                "num_posts": data['edge_owner_to_timeline_media']['count'],
+                "profile_pic_url": data['profile_pic_url_hd'],
+                "verified": data['is_verified'],
+            }
+        return {"error": "No Instagram user found"}
+    except Exception as e:
+        return {"error": f"Instagram search failed: {e}"}
+
 def run_tool(target):
     """Tool ka main function"""
     print(f"Searching for: {target}")
 
-    web_results = search_web(target)
-    twitter_results = search_twitter(target)
-    facebook_results = search_facebook(target)
+    results = {
+        "web": search_web(target),
+        "twitter": search_twitter(target),
+        "facebook": search_facebook(target),
+        "instagram": search_instagram(target),
+    }
 
-    print("\n🔍 Web Results:")
-    for link in web_results:
-        print(f"- {link}")
-
-    print("\n🐦 Twitter Data:")
-    print(twitter_results)
-
-    print("\n📘 Facebook Data:")
-    print(facebook_results)
+    print(json.dumps(results, indent=2))
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="AnonyInfo - OSINT Tool")
