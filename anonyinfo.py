@@ -1,107 +1,193 @@
 import argparse
 import requests
-from bs4 import BeautifulSoup
-import tweepy
-import facebook
-import os
-from dotenv import load_dotenv
 import json
+import re
+import socket
+from ddgs import DDGS
 
-# Load environment variables from .env file
-load_dotenv()
+# --- Social Media Platforms to check ---
+SOCIAL_PLATFORMS = {
+    "GitHub": "https://github.com/{}",
+    "YouTube": "https://www.youtube.com/@{}",
+    "Twitch": "https://www.twitch.tv/{}",
+    "Reddit": "https://www.reddit.com/user/{}",
+    "Medium": "https://medium.com/@{}",
+    "Pinterest": "https://www.pinterest.com/{}",
+    "SoundCloud": "https://soundcloud.com/{}",
+    "Steam": "https://steamcommunity.com/id/{}",
+    "Behance": "https://www.behance.net/{}",
+    "Flickr": "https://www.flickr.com/people/{}",
+    "Vimeo": "https://vimeo.com/{}",
+    "Dribbble": "https://dribbble.com/{}",
+    "Tumblr": "https://{}.tumblr.com",
+    "DeviantArt": "https://www.deviantart.com/{}",
+    "About.me": "https://about.me/{}",
+    "SlideShare": "https://www.slideshare.net/{}",
+    "Keybase": "https://keybase.io/{}",
+    "OpenStreetMap": "https://www.openstreetmap.org/user/{}",
+    "Spotify": "https://open.spotify.com/user/{}",
+    "Mastodon": "https://mastodon.social/@{}",
+    "CodePen": "https://codepen.io/{}",
+    "Letterboxd": "https://letterboxd.com/{}",
+    "Patreon": "https://www.patreon.com/{}",
+    "Substack": "https://{}.substack.com",
+}
 
-# Get API keys from environment variables
-TWITTER_API_KEY = os.getenv("TWITTER_API_KEY")
-TWITTER_API_SECRET = os.getenv("TWITTER_API_SECRET")
-TWITTER_ACCESS_TOKEN = os.getenv("TWITTER_ACCESS_TOKEN")
-TWITTER_ACCESS_SECRET = os.getenv("TWITTER_ACCESS_SECRET")
-FACEBOOK_ACCESS_TOKEN = os.getenv("FACEBOOK_ACCESS_TOKEN")
+# --- Browser Headers ---
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+}
 
-# Twitter API Setup
-auth = tweepy.OAuthHandler(TWITTER_API_KEY, TWITTER_API_SECRET)
-auth.set_access_token(TWITTER_ACCESS_TOKEN, TWITTER_ACCESS_SECRET)
-twitter_api = tweepy.API(auth)
+# --- ANSI Colors for 'Hacker' Aesthetic ---
+GREEN = '\033[92m'
+CYAN = '\033[96m'
+YELLOW = '\033[93m'
+RED = '\033[91m'
+BOLD = '\033[1m'
+RESET = '\033[0m'
 
-# Facebook API Setup
-facebook_api = facebook.GraphAPI(FACEBOOK_ACCESS_TOKEN)
+def is_domain_or_ip(target):
+    """Checks if the target looks like a domain name or IP address"""
+    domain_pattern = r'^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$'
+    ip_pattern = r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$'
+    return re.match(domain_pattern, target.lower()) or re.match(ip_pattern, target)
 
-def search_web(target_name):
-    """Google par search karega"""
-    url = f"https://www.google.com/search?q={target_name}"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    response = requests.get(url, headers=headers)
-    soup = BeautifulSoup(response.text, "html.parser")
-    links = [link.get("href") for link in soup.find_all("a") if "http" in str(link.get("href"))]
-    return links[:5]
-
-def search_twitter(target_name):
-    """Twitter profile & tweets dhoondhega"""
+def get_network_info(target):
+    """Gathers basic DNS/IP info if target is a domain/IP"""
+    info = {}
     try:
-        users = twitter_api.search_users(target_name, count=1)
-        if users:
-            user = users[0]
-            return {
-                "username": user.screen_name,
-                "bio": user.description,
-                "tweets": [tweet.text for tweet in twitter_api.user_timeline(screen_name=user.screen_name, count=3)]
-            }
-        return {"error": "No Twitter user found"}
-    except Exception as e:
-        return {"error": f"Twitter search failed: {e}"}
+        ip_addr = socket.gethostbyname(target)
+        info["IP Address"] = ip_addr
+        try:
+            rdns = socket.gethostbyaddr(ip_addr)
+            info["Reverse DNS"] = rdns[0]
+        except:
+            pass
 
-def search_facebook(target_name):
-    """Facebook pages check karega"""
+        try:
+            geo_res = requests.get(f"http://ip-api.com/json/{ip_addr}", timeout=5).json()
+            if geo_res.get("status") == "success":
+                info["Location"] = f"{geo_res.get('city')}, {geo_res.get('country')}"
+                info["ISP"] = geo_res.get("isp")
+        except:
+            pass
+
+    except Exception as e:
+        info["error"] = f"Could not resolve host: {str(e)}"
+    return info
+
+def search_web_free(target_name):
+    """Searches using DuckDuckGo (Free & Open Source)"""
     try:
-        data = facebook_api.request(f"search?q={target_name}&type=page")
-        if data["data"]:
-            page = data["data"][0]
-            return {"name": page.get("name", "Unknown"), "about": page.get("about", "No about info")}
-        return {"error": "No public Facebook page found"}
+        with DDGS() as ddgs:
+            results = [r for r in ddgs.text(target_name, max_results=10)]
+            return results
     except Exception as e:
-        return {"error": f"Facebook search failed: {e}"}
+        return {"error": f"Web search failed: {str(e)}"}
 
-def search_instagram(target_name):
-    """
-    Instagram profile dhoondhega.
-    WARNING: This function uses an unofficial, unauthenticated API endpoint that is subject to change and may break without notice.
-    """
-    url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={target_name}"
-    headers = {
-        "accept": "*/*",
-        "accept-language": "en-US,en;q=0.9",
-        "x-ig-app-id": "936619743392459",
+def check_social_media(target_name):
+    """Checks for profiles across multiple platforms"""
+    found = {}
+    print(f"{CYAN}[*] Searching social media profiles for '{target_name}'...{RESET}")
+
+    with requests.Session() as session:
+        session.headers.update(HEADERS)
+        for platform, url_template in SOCIAL_PLATFORMS.items():
+            url = url_template.format(target_name)
+            try:
+                response = session.get(url, timeout=5, allow_redirects=True)
+                if response.status_code == 200:
+                    final_url = response.url.lower()
+                    if any(x in final_url for x in ["login", "signup", "register", "404"]):
+                        continue
+                    # Content based filtering for false positives
+                    text = response.text.lower()
+                    if "pinterest.com" in url and "404" in text:
+                        continue
+                    if "reddit.com" in url and "nobody on reddit goes by that name" in text:
+                        continue
+                    if "github.com" in url and "find any users matching" in text:
+                        continue
+
+                    found[platform] = response.url
+                    print(f"{GREEN}[+] Found: {platform}{RESET}")
+            except Exception:
+                continue
+    return found
+
+def generate_dorking_links(target_name):
+    """Generates Google Dorking links for deeper investigation"""
+    dorks = {
+        "LinkedIn Profiles": f"https://www.google.com/search?q=site:linkedin.com/in+%22{target_name}%22",
+        "Public Documents": f"https://www.google.com/search?q=%22{target_name}%22+filetype:pdf+OR+filetype:doc+OR+filetype:xlsx",
+        "Email Leak Search": f"https://www.google.com/search?q=%22{target_name}%22+%40gmail.com+OR+%40outlook.com+OR+%40yahoo.com",
+        "Directory Listings": f"https://www.google.com/search?q=intitle:%22index+of%22+%22{target_name}%22",
+        "Pastebin/Github Gists": f"https://www.google.com/search?q=site:pastebin.com+OR+site:gist.github.com+%22{target_name}%22",
     }
-    try:
-        response = requests.get(url, headers=headers)
-        if response.status_code == 200:
-            data = response.json()['data']['user']
-            return {
-                "biography": data['biography'],
-                "followers": data['edge_followed_by']['count'],
-                "following": data['edge_follow']['count'],
-                "num_posts": data['edge_owner_to_timeline_media']['count'],
-                "profile_pic_url": data['profile_pic_url_hd'],
-                "verified": data['is_verified'],
-            }
-        return {"error": "No Instagram user found"}
-    except Exception as e:
-        return {"error": f"Instagram search failed: {e}"}
+    return dorks
+
+def print_banner():
+    banner = f"""{GREEN}{BOLD}
+    █████╗ ███╗   ██╗ ██████╗ ███╗   ██╗██╗   ██╗██╗███╗   ██╗███████╗ ██████╗
+    ██╔══██╗████╗  ██║██╔═══██╗████╗  ██║╚██╗ ██╔╝██║████╗  ██║██╔════╝██╔═══██╗
+    ███████║██╔██╗ ██║██║   ██║██╔██╗ ██║ ╚████╔╝ ██║██╔██╗ ██║█████╗  ██║   ██║
+    ██╔══██║██║╚██╗██║██║   ██║██║╚██╗██║  ╚██╔╝  ██║██║╚██╗██║██╔══╝  ██║   ██║
+    ██║  ██║██║ ╚████║╚██████╔╝██║ ╚████║   ██║   ██║██║ ╚████║██║     ╚██████╔╝
+    ╚═╝  ╚═╝╚═╝  ╚═══╝ ╚═════╝ ╚═╝  ╚═══╝   ╚═╝   ╚═╝╚═╝  ╚═══╝╚═╝      ╚═════╝
+    {CYAN}--- The Ultimate Free & Open Source OSINT Tool v2.0 ---{RESET}
+    """
+    print(banner)
 
 def run_tool(target):
-    """Tool ka main function"""
-    print(f"Searching for: {target}")
+    print_banner()
 
-    results = {
-        "web": search_web(target),
-        "twitter": search_twitter(target),
-        "facebook": search_facebook(target),
-        "instagram": search_instagram(target),
-    }
+    print(f"{YELLOW}{BOLD}Target: {target}{RESET}\n")
 
-    print(json.dumps(results, indent=2))
+    # Network Info if applicable
+    if is_domain_or_ip(target):
+        print(f"{CYAN}[*] Gathering Network Info for '{target}'...{RESET}")
+        net_info = get_network_info(target)
+        if "error" not in net_info:
+            print(f"{GREEN}[+] Network Details:{RESET}")
+            for k, v in net_info.items():
+                print(f"    - {k}: {v}")
+        else:
+            print(f"    {RED}[!] {net_info['error']}{RESET}")
+        print()
+
+    # Social Media
+    social_results = check_social_media(target)
+    if social_results:
+        print(f"\n{GREEN}[+] Found {len(social_results)} Social Media Profiles:{RESET}")
+        for p, u in social_results.items():
+            print(f"    - {CYAN}{p}{RESET}: {u}")
+    else:
+        print(f"\n{YELLOW}[!] No direct social media profiles found.{RESET}")
+
+    # Web Results
+    print(f"\n{CYAN}[*] Searching web results...{RESET}")
+    web_results = search_web_free(target)
+    if isinstance(web_results, list) and web_results:
+        print(f"{GREEN}[+] Top Web Results:{RESET}")
+        for r in web_results:
+            print(f"    - {BOLD}{r.get('title', 'No Title')}{RESET}: {r.get('href', 'No URL')}")
+    elif not web_results:
+         print(f"{YELLOW}[!] No web results found.{RESET}")
+    else:
+        print(f"    {RED}[!] {web_results.get('error')}{RESET}")
+
+    # Dorking Links
+    print(f"\n{GREEN}[+] Deep Investigation Dorks:{RESET}")
+    dorks = generate_dorking_links(target)
+    for name, link in dorks.items():
+        print(f"    - {CYAN}{name}{RESET}: {link}")
+
+    print("\n" + "="*70)
+    print(f"{GREEN}{BOLD}   Search complete. Happy hunting!{RESET}")
+    print("="*70 + "\n")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="AnonyInfo - OSINT Tool")
-    parser.add_argument("target", help="Enter the target's name or username")
+    parser = argparse.ArgumentParser(description="AnonyInfo - Ultimate Free OSINT Tool")
+    parser.add_argument("target", help="Enter the target's name, username, domain, or IP")
     args = parser.parse_args()
     run_tool(args.target)

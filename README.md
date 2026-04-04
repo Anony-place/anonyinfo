@@ -1,10 +1,12 @@
-# AnonyInfo - OSINT Tool
+# AnonyInfo - OSINT Tool (Free & Open Source)
 
-Start your hacking journey with us. This tool helps you gather information about a target from various sources.
+Start your hacking journey with us. This tool helps you gather information about a target from various sources without requiring any API keys.
 
 ## Features
 
-*   Search for a target on Google, Twitter, and Facebook.
+*   **Web Search:** Searches for information about the target using DuckDuckGo.
+*   **Social Media Discovery:** Checks for profiles on popular platforms like Twitter/X, GitHub, YouTube, and more.
+*   **No API Keys Required:** Works out of the box using only free and open-source methods.
 
 ## Installation
 
@@ -16,17 +18,9 @@ Start your hacking journey with us. This tool helps you gather information about
     ```bash
     pip install -r requirements.txt
     ```
-3.  Create a `.env` file in the root of the project and add your API keys:
-    ```
-    TWITTER_API_KEY="your_twitter_api_key"
-    TWITTER_API_SECRET="your_twitter_api_secret"
-    TWITTER_ACCESS_TOKEN="your_twitter_access_token"
-    TWITTER_ACCESS_SECRET="your_twitter_access_secret"
-    FACEBOOK_ACCESS_TOKEN="your_facebook_access_token"
-    ```
 
 ## Usage
 
 ```bash
-python anonyinfo.py <target_name>
+python anonyinfo.py <target_name_or_username>
 ```
