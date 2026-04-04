@@ -5,12 +5,15 @@ import re
 import socket
 import asyncio
 import aiohttp
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 from datetime import datetime
 import sys
 import os
+import dns.resolver
+import phonenumbers
+from phonenumbers import geocoder, carrier
 
-# --- Massive Social Media Platforms List (100+ for World Best OSINT) ---
+# --- Configuration & Social Platform Database (80+) ---
 SOCIAL_PLATFORMS = {
     "GitHub": "https://github.com/{}",
     "YouTube": "https://www.youtube.com/@{}",
@@ -36,24 +39,22 @@ SOCIAL_PLATFORMS = {
     "Letterboxd": "https://letterboxd.com/{}",
     "Patreon": "https://www.patreon.com/{}",
     "Substack": "https://{}.substack.com",
-    "Roblox": "https://www.roblox.com/user.aspx?username={}",
-    "TradingView": "https://www.tradingview.com/u/{}/",
     "Snapchat": "https://www.snapchat.com/add/{}",
     "Telegram": "https://t.me/{}",
     "TikTok": "https://www.tiktok.com/@{}",
+    "Roblox": "https://www.roblox.com/user.aspx?username={}",
+    "TradingView": "https://www.tradingview.com/u/{}/",
     "Fiverr": "https://www.fiverr.com/{}",
     "Upwork": "https://www.upwork.com/freelancers/~{}",
     "Freelancer": "https://www.freelancer.com/u/{}",
     "Chess.com": "https://www.chess.com/member/{}",
     "Duolingo": "https://www.duolingo.com/profile/{}",
     "Strava": "https://www.strava.com/athletes/{}",
-    "AllTrails": "https://www.alltrails.com/members/{}",
     "BuyMeACoffee": "https://www.buymeacoffee.com/{}",
     "Gumroad": "https://gumroad.com/{}",
     "Linktree": "https://linktr.ee/{}",
     "OnlyFans": "https://onlyfans.com/{}",
     "ProductHunt": "https://www.producthunt.com/@{}",
-    "TripAdvisor": "https://www.tripadvisor.com/members/{}",
     "WordPress": "https://{}.wordpress.com",
     "Blogspot": "https://{}.blogspot.com",
     "Codechef": "https://www.codechef.com/users/{}",
@@ -75,6 +76,7 @@ SOCIAL_PLATFORMS = {
     "Wattpad": "https://www.wattpad.com/user/{}",
     "Canva": "https://www.canva.com/{}",
     "CreativeMarket": "https://creativemarket.com/{}",
+    "Envato": "https://{}.envato.com",
     "EyeEm": "https://www.eyeem.com/u/{}",
     "500px": "https://500px.com/p/{}",
     "VSCO": "https://vsco.co/{}",
@@ -100,15 +102,21 @@ SOCIAL_PLATFORMS = {
 
 # --- ANSI Colors ---
 GREEN, CYAN, YELLOW, RED, BOLD, RESET = '\033[92m', '\033[96m', '\033[93m', '\033[91m', '\033[1m', '\033[0m'
+HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'}
 
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-}
+# --- Core Modules ---
 
-def is_domain_or_ip(target):
+def detect_input_type(target):
+    if re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', target): return "EMAIL"
+    if re.match(r'^https?://', target):
+        if any(target.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']): return "IMAGE"
+        return "URL"
+    clean_target = re.sub(r'[^0-9+]', '', target)
+    if (clean_target.startswith('+') and clean_target[1:].isdigit()) or (clean_target.isdigit() and 7 <= len(clean_target) <= 15): return "PHONE"
     domain_pattern = r'^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$'
     ip_pattern = r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$'
-    return re.match(domain_pattern, target.lower()) or re.match(ip_pattern, target)
+    if re.match(domain_pattern, target.lower()) or re.match(ip_pattern, target): return "NETWORK"
+    return "USER"
 
 def get_network_info(target):
     info = {}
@@ -119,22 +127,32 @@ def get_network_info(target):
             rdns = socket.gethostbyaddr(ip_addr)
             info["Reverse DNS"] = rdns[0]
         except: pass
+        for rtype in ['MX', 'TXT', 'A', 'NS']:
+            try:
+                answers = dns.resolver.resolve(target, rtype)
+                info[f"DNS {rtype}"] = [str(rdata) for rdata in answers]
+            except: pass
         try:
             geo_res = requests.get(f"http://ip-api.com/json/{ip_addr}", timeout=5).json()
             if geo_res.get("status") == "success":
                 info["Location"] = f"{geo_res.get('city')}, {geo_res.get('country')}"
                 info["ISP"] = geo_res.get("isp")
         except: pass
-    except Exception as e:
-        info["error"] = f"Resolution failed: {str(e)}"
+    except Exception as e: info["error"] = str(e)
     return info
 
-def search_web_free(target_name):
+def get_phone_info(target):
+    info = {}
     try:
-        with DDGS() as ddgs:
-            return [r for r in ddgs.text(target_name, max_results=10)]
-    except Exception as e:
-        return {"error": f"Web search failed: {str(e)}"}
+        parsed_num = phonenumbers.parse(target if target.startswith('+') else "+" + target)
+        if phonenumbers.is_valid_number(parsed_num):
+            info["Valid"] = "Yes"
+            info["International"] = phonenumbers.format_number(parsed_num, phonenumbers.PhoneNumberFormat.INTERNATIONAL)
+            info["Country"] = geocoder.description_for_number(parsed_num, "en")
+            info["Carrier"] = carrier.name_for_number(parsed_num, "en")
+        else: info["Valid"] = "Invalid Format"
+    except Exception as e: info["error"] = str(e)
+    return info
 
 async def check_platform(session, semaphore, platform, url_template, target, progress):
     url = url_template.format(target)
@@ -150,112 +168,103 @@ async def check_platform(session, semaphore, platform, url_template, target, pro
                         if "pinterest.com" in url and "404" in text: pass
                         elif "reddit.com" in url and "nobody on reddit goes by that name" in text: pass
                         elif "github.com" in url and "find any users matching" in text: pass
-                        else:
-                            result = (platform, str(response.url))
+                        else: result = (platform, str(response.url))
         except: pass
-
     progress['count'] += 1
-    sys.stdout.write(f"\r{CYAN}[*] Progress: {progress['count']}/{progress['total']} platforms checked...{RESET}")
+    sys.stdout.write(f"\r{CYAN}[*] Searching social media: {progress['count']}/{progress['total']}...{RESET}")
     sys.stdout.flush()
-    if result:
-        sys.stdout.write(f"\n{GREEN}[+] Found: {result[0]}{RESET}\n")
+    if result: sys.stdout.write(f"\n{GREEN}[+] Found: {result[0]}{RESET}\n")
     return result
 
 async def check_social_media_async(target_name):
     total = len(SOCIAL_PLATFORMS)
     progress = {'count': 0, 'total': total}
-    semaphore = asyncio.Semaphore(20) # Limit concurrency to avoid rate limiting
-    print(f"{CYAN}[*] Starting Deep Async Social Discovery for '{target_name}'...{RESET}")
-    found = {}
+    semaphore = asyncio.Semaphore(20)
     async with aiohttp.ClientSession(headers=HEADERS) as session:
-        tasks = []
-        for platform, url_template in SOCIAL_PLATFORMS.items():
-            tasks.append(check_platform(session, semaphore, platform, url_template, target_name, progress))
+        tasks = [check_platform(session, semaphore, p, u, target_name, progress) for p, u in SOCIAL_PLATFORMS.items()]
         results = await asyncio.gather(*tasks)
-        for res in results:
-            if res: found[res[0]] = res[1]
-    print(f"\n{CYAN}[*] Social Discovery Completed.{RESET}")
-    return found
+    return {res[0]: res[1] for res in results if res}
 
-def generate_dorking_links(target_name):
-    dorks = {
-        "LinkedIn Profiles": f"https://www.google.com/search?q=site:linkedin.com/in+%22{target_name}%22",
-        "Public Documents": f"https://www.google.com/search?q=%22{target_name}%22+filetype:pdf+OR+filetype:doc+OR+filetype:xlsx",
-        "Email Leak Search": f"https://www.google.com/search?q=%22{target_name}%22+%40gmail.com+OR+%40outlook.com+OR+%40yahoo.com",
-        "Directory Listings": f"https://www.google.com/search?q=intitle:%22index+of%22+%22{target_name}%22",
-        "Pastebin/Github Gists": f"https://www.google.com/search?q=site:pastebin.com+OR+site:gist.github.com+%22{target_name}%22",
-    }
-    # Add phone dorking only if target looks like a number
-    if re.sub(r'[^0-9]', '', target_name).isdigit() and len(re.sub(r'[^0-9]', '', target_name)) >= 7:
-        clean_num = re.sub(r'[^0-9]', '', target_name)
-        dorks["Phone Number OSINT"] = f"https://www.google.com/search?q=%22{target_name}%22+OR+%22{clean_num[:3]}-{clean_num[3:6]}-{clean_num[6:]}%22"
-    return dorks
+def get_osint_links(target, input_type):
+    links = {}
+    if input_type == "USER":
+        links["LinkedIn"] = f"https://www.google.com/search?q=site:linkedin.com/in+%22{target}%22"
+        links["Leaks/Pastes"] = f"https://www.google.com/search?q=site:pastebin.com+OR+site:gist.github.com+%22{target}%22"
+    elif input_type == "EMAIL":
+        links["Data Leaks"] = f"https://www.google.com/search?q=%22{target}%22+leak+OR+password"
+        links["Social Search"] = f"https://www.google.com/search?q=%22{target}%22"
+    elif input_type == "PHONE":
+        clean = re.sub(r'[^0-9]', '', target)
+        links["Caller ID Check"] = f"https://www.google.com/search?q=%22{clean}%22+OR+%22{target}%22"
+    elif input_type == "IMAGE":
+        links["Google Lens"] = f"https://lens.google.com/uploadbyurl?url={target}"
+        links["Yandex"] = f"https://yandex.com/images/search?rpt=imageview&url={target}"
+        links["Bing Visual Search"] = f"https://www.bing.com/images/searchbyimage?cbir=sbi&imgurl={target}"
+    elif input_type == "NETWORK":
+        links["Shodan"] = f"https://www.shodan.io/search?query={target}"
+        links["Whois"] = f"https://who.is/whois/{target}"
+        links["Censys"] = f"https://censys.io/ipv4/{target}"
+    return links
 
 def print_banner():
-    banner = f"""{GREEN}{BOLD}
-    █████╗ ███╗   ██╗ ██████╗ ███╗   ██╗██╗   ██╗██╗███╗   ██╗███████╗ ██████╗
-    ██╔══██╗████╗  ██║██╔═══██╗████╗  ██║╚██╗ ██╔╝██║████╗  ██║██╔════╝██╔═══██╗
-    ███████║██╔██╗ ██║██║   ██║██╔██╗ ██║ ╚████╔╝ ██║██╔██╗ ██║█████╗  ██║   ██║
-    ██╔══██║██║╚██╗██║██║   ██║██║╚██╗██║  ╚██╔╝  ██║██║╚██╗██║██╔══╝  ██║   ██║
-    ██║  ██║██║ ╚████║╚██████╔╝██║ ╚████║   ██║   ██║██║ ╚████║██║     ╚██████╔╝
-    ╚═╝  ╚═╝╚═╝  ╚═══╝ ╚═════╝ ╚═╝  ╚═══╝   ╚═╝   ╚═╝╚═╝  ╚═══╝╚═╝      ╚═════╝
-    {CYAN}--- ANONYINFO WORLD BEST FREE OSINT TOOL v3.0 (ULTIMATE) ---{RESET}
-    """
-    print(banner)
-
-def save_report(target, social, web, dorks, network):
-    safe_target = re.sub(r'[^a-zA-Z0-9]', '_', target)
-    filename = f"report_{safe_target}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-    with open(filename, "w", encoding="utf-8") as f:
-        f.write(f"ANONYINFO OSINT REPORT - {target.upper()}\n")
-        f.write("="*50 + "\n\n")
-        if network:
-            f.write("[NETWORK INFO]\n")
-            for k, v in network.items(): f.write(f" - {k}: {v}\n")
-            f.write("\n")
-        f.write("[SOCIAL MEDIA PROFILES]\n")
-        for p, u in social.items(): f.write(f" - {p}: {u}\n")
-        f.write("\n[WEB RESULTS]\n")
-        if isinstance(web, list):
-            for r in web: f.write(f" - {r.get('title')}: {r.get('href')}\n")
-        f.write("\n[DORKING LINKS]\n")
-        for n, l in dorks.items(): f.write(f" - {n}: {l}\n")
-    return filename
+    print(f"{GREEN}{BOLD}")
+    print("    █████╗ ███╗   ██╗ ██████╗ ███╗   ██╗██╗   ██╗██╗███╗   ██╗███████╗ ██████╗ ")
+    print("    ██╔══██╗████╗  ██║██╔═══██╗████╗  ██║╚██╗ ██╔╝██║████╗  ██║██╔════╝██╔═══██╗")
+    print("    ███████║██╔██╗ ██║██║   ██║██╔██╗ ██║ ╚████╔╝ ██║██╔██╗ ██║█████╗  ██║   ██║")
+    print("    ██╔══██║██║╚██╗██║██║   ██║██║╚██╗██║  ╚██╔╝  ██║██║╚██╗██║██╔══╝  ██║   ██║")
+    print("    ██║  ██║██║ ╚████║╚██████╔╝██║ ╚████║   ██║   ██║██║ ╚████║██║     ╚██████╔╝")
+    print("    ╚═╝  ╚═╝╚═╝  ╚═══╝ ╚═════╝ ╚═╝  ╚═══╝   ╚═╝   ╚═╝╚═╝  ╚═══╝╚═╝      ╚═════╝ ")
+    print(f"    {CYAN}--- ANONYINFO: THE UNIVERSAL OPEN-SOURCE OSINT TOOL v4.0 ---{RESET}")
 
 async def run_tool(target, report=False):
     print_banner()
-    print(f"{YELLOW}{BOLD}Target: {target}{RESET}\n")
+    input_type = detect_input_type(target)
+    print(f"{YELLOW}{BOLD}Target: {target} (Type: {input_type}){RESET}\n")
+    results = {"target": target, "type": input_type, "timestamp": str(datetime.now())}
 
-    net_info = {}
-    if is_domain_or_ip(target):
+    if input_type == "NETWORK":
         print(f"{CYAN}[*] Gathering Network Details...{RESET}")
-        net_info = get_network_info(target)
-        if "error" not in net_info:
-            print(f"{GREEN}[+] Network Details:{RESET}")
-            for k, v in net_info.items(): print(f"    - {k}: {v}")
+        results["network"] = get_network_info(target)
+        for k, v in results["network"].items(): print(f"    - {k}: {v}")
         print()
+    elif input_type == "PHONE":
+        print(f"{CYAN}[*] Gathering Phone Details...{RESET}")
+        results["phone"] = get_phone_info(target)
+        for k, v in results["phone"].items(): print(f"    - {k}: {v}")
+        print()
+    elif input_type == "IMAGE":
+        print(f"{GREEN}[+] Reverse Search Links Ready.{RESET}")
 
-    social_results = await check_social_media_async(target)
+    # Web Search (Always)
+    print(f"{CYAN}[*] Searching the web...{RESET}")
+    try:
+        with DDGS() as ddgs:
+            results["web"] = [r for r in ddgs.text(target, max_results=10)]
+            print(f"{GREEN}[+] Found {len(results['web'])} Web Results.{RESET}")
+            for r in results["web"]: print(f"    - {BOLD}{r.get('title', 'No Title')}{RESET}: {r.get('href', 'No URL')}")
+    except Exception as e:
+        results["web"] = []
+        print(f"{RED}[!] Web search failed: {e}{RESET}")
 
-    print(f"\n{CYAN}[*] Searching web results...{RESET}")
-    web_results = search_web_free(target)
-    if isinstance(web_results, list) and web_results:
-        print(f"{GREEN}[+] Top Web Results:{RESET}")
-        for r in web_results: print(f"    - {BOLD}{r.get('title', 'No Title')}{RESET}: {r.get('href', 'No URL')}")
+    # Social Discovery
+    if input_type in ["USER", "EMAIL"]:
+        results["social"] = await check_social_media_async(target.split('@')[0])
+        print(f"\n\n{GREEN}[+] Discovered {len(results['social'])} Social Profiles.{RESET}")
+        for p, u in results["social"].items(): print(f"    - {CYAN}{p}{RESET}: {u}")
 
-    dorks = generate_dorking_links(target)
-    print(f"\n{GREEN}[+] Deep Investigation Dorks:{RESET}")
-    for name, link in dorks.items(): print(f"    - {CYAN}{name}{RESET}: {link}")
+    # Dorks
+    results["links"] = get_osint_links(target, input_type)
+    print(f"\n{GREEN}[+] Deep Investigation Links:{RESET}")
+    for name, link in results["links"].items(): print(f"    - {CYAN}{name}{RESET}: {link}")
 
     if report:
-        fname = save_report(target, social_results, web_results if isinstance(web_results, list) else [], dorks, net_info)
+        fname = f"report_{re.sub(r'[^a-zA-Z0-9]', '_', target)}.json"
+        with open(fname, "w") as f: json.dump(results, f, indent=2)
         print(f"\n{YELLOW}[!] Report saved to: {fname}{RESET}")
-
-    print(f"\n{GREEN}{BOLD}Search complete. Happy hunting!{RESET}\n")
+    print(f"\n{GREEN}{BOLD}Universal Search Complete.{RESET}\n")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="AnonyInfo - World Best Free OSINT Tool")
-    parser.add_argument("target", help="Enter name, username, domain, or IP")
-    parser.add_argument("--report", action="store_true", help="Generate a text report file")
-    args = parser.parse_args()
-    asyncio.run(run_tool(args.target, args.report))
+    parser = argparse.ArgumentParser(description="AnonyInfo OSINT")
+    parser.add_argument("target", help="Email, Phone, Name, Domain, or Image URL")
+    parser.add_argument("--report", action="store_true", help="JSON report")
+    asyncio.run(run_tool(parser.parse_args().target, parser.parse_args().report))
