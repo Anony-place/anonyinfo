@@ -1,10 +1,17 @@
-# AnonyInfo - OSINT Tool
+# AnonyInfo - The Universal Open-Source OSINT Tool
 
-Start your hacking journey with us. This tool helps you gather information about a target from various sources.
+AnonyInfo is a powerful, high-performance OSINT suite that gathers intelligence from across the web without requiring any private API keys or developer accounts. It features automatic input detection and asynchronous probing for maximum speed.
 
 ## Features
 
-*   Search for a target on Google, Twitter, and Facebook.
+*   **Universal Input Detection:** Automatically handles Names, Usernames, Emails, Phone Numbers, Domains, IPs, and Image URLs.
+*   **High-Speed Discovery:** Asynchronous probing of 80+ social media platforms.
+*   **Network Intelligence:** Automatic DNS record resolution (MX, TXT, A, NS) and IP geolocation.
+*   **Phone OSINT:** International formatting, country/carrier detection, and regional lookups.
+*   **Reverse Image Search:** Instant generation of investigation links for Google Lens, Yandex, and Bing.
+*   **Deep Web Search:** Clean, integrated web search results via DuckDuckGo.
+*   **Investigation Links:** Automated generation of deep-search dorks for leaks, LinkedIn, and more.
+*   **JSON Reporting:** Save all findings into structured report files.
 
 ## Installation
 
@@ -16,17 +23,17 @@ Start your hacking journey with us. This tool helps you gather information about
     ```bash
     pip install -r requirements.txt
     ```
-3.  Create a `.env` file in the root of the project and add your API keys:
-    ```
-    TWITTER_API_KEY="your_twitter_api_key"
-    TWITTER_API_SECRET="your_twitter_api_secret"
-    TWITTER_ACCESS_TOKEN="your_twitter_access_token"
-    TWITTER_ACCESS_SECRET="your_twitter_access_secret"
-    FACEBOOK_ACCESS_TOKEN="your_facebook_access_token"
-    ```
 
 ## Usage
 
 ```bash
-python anonyinfo.py <target_name>
+# General Search (Name, Username, Email, Phone, Domain, IP, or Image URL)
+python anonyinfo.py <target>
+
+# Generate a JSON Report
+python anonyinfo.py <target> --report
 ```
+
+## Contributing
+
+This tool is entirely free and open-source. Contributions are welcome!
