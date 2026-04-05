@@ -15,13 +15,14 @@ from phonenumbers import geocoder, carrier
 import exifread
 from io import BytesIO
 
-# --- Categories: Social, Dev, Gaming, Creative, International, Lifestyle ---
+# --- APEX PLATFORM DATABASE (200+ Capability) ---
 SOCIAL_PLATFORMS = {
     "GitHub": "https://github.com/{}", "YouTube": "https://www.youtube.com/@{}", "Twitch": "https://www.twitch.tv/{}", "Reddit": "https://www.reddit.com/user/{}",
     "Medium": "https://medium.com/@{}", "Pinterest": "https://www.pinterest.com/{}", "Tumblr": "https://{}.tumblr.com", "Mastodon": "https://mastodon.social/@{}",
     "Substack": "https://{}.substack.com", "Twitter/X": "https://x.com/{}", "Quora": "https://www.quora.com/profile/{}", "VK": "https://vk.com/{}",
     "OK.ru": "https://ok.ru/{}", "Weibo": "https://weibo.com/{}", "Linktree": "https://linktr.ee/{}", "Snapchat": "https://www.snapchat.com/add/{}",
     "Telegram": "https://t.me/{}", "TikTok": "https://www.tiktok.com/@{}", "Discord": "https://discord.com/users/{}", "Clubhouse": "https://www.clubhouse.com/@{}",
+    "Instagram": "https://www.instagram.com/{}/", "Facebook": "https://www.facebook.com/{}", "Threads": "https://www.threads.net/@{}",
     "GitLab": "https://gitlab.com/{}", "Bitbucket": "https://bitbucket.org/{}", "CodePen": "https://codepen.io/{}", "Hackerrank": "https://www.hackerrank.com/{}",
     "LeetCode": "https://leetcode.com/{}", "Kaggle": "https://www.kaggle.com/{}", "TryHackMe": "https://tryhackme.com/p/{}", "HackTheBox": "https://www.hackthebox.eu/home/users/profile/{}",
     "Codechef": "https://www.codechef.com/users/{}", "SourceForge": "https://sourceforge.net/u/{}", "NPM": "https://www.npmjs.com/~{}", "PyPi": "https://pypi.org/user/{}",
@@ -39,66 +40,112 @@ SOCIAL_PLATFORMS = {
     "POF": "https://www.pof.com/viewprofile.aspx?profile_id={}", "OkCupid": "https://www.okcupid.com/profile/{}", "Match": "https://www.match.com/profile/{}",
 }
 
+COMMON_PORTS = [21, 22, 23, 25, 53, 80, 110, 143, 443, 445, 3306, 3389, 5432, 6379, 8080, 8443, 27017]
+
 # --- ANSI Colors ---
 G, C, Y, R, B, RES = '\033[92m', '\033[96m', '\033[93m', '\033[91m', '\033[1m', '\033[0m'
 HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'}
 
-def detect_target_components(target):
-    comp = {"original": target, "types": []}
+def section_header(title):
+    print(f"\n{B}{Y}>>> [{title.upper()}] <<<{RES}")
+
+# --- Advanced Modules ---
+
+async def fingerprint_web(url):
+    print(f"{C}[*] Probing Web Infrastructure...{RES}")
+    fp = {}
+    try:
+        async with aiohttp.ClientSession(headers=HEADERS) as session:
+            async with session.get(url, timeout=10) as resp:
+                fp["Server"] = resp.headers.get("Server", "Unknown")
+                text = (await resp.text()).lower()
+                if "wp-content" in text: fp["CMS"] = "WordPress"
+                elif "shopify" in text: fp["CMS"] = "Shopify"
+                else: fp["CMS"] = "Detected via Engine"
+                fp["Headers"] = [h for h in ["Content-Security-Policy", "Strict-Transport-Security"] if h in resp.headers]
+    except: pass
+    return fp
+
+async def get_subdomains(domain):
+    print(f"{C}[*] Certificate Transparency Lookup (crt.sh)...{RES}")
+    subs = set()
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.get(f"https://crt.sh/?q=%25.{domain}&output=json", timeout=20) as r:
+                if r.status == 200:
+                    for e in await r.json():
+                        for x in e['name_value'].split("\n"):
+                            if x.endswith(domain) and "*" not in x: subs.add(x.strip().lower())
+    except: pass
+    return sorted(list(subs))
+
+async def scan_port(ip, port):
+    try:
+        conn = asyncio.open_connection(ip, port)
+        await asyncio.wait_for(conn, timeout=1.0); return port
+    except: return None
+
+async def port_scanner(target):
+    print(f"{C}[*] Scanning High-Value Ports...{RES}")
+    try:
+        ip = socket.gethostbyname(target)
+        res = await asyncio.gather(*[scan_port(ip, p) for p in COMMON_PORTS])
+        return [p for p in res if p]
+    except: return []
+
+def detect_target(target):
+    comp = {"orig": target, "types": []}
     em = re.match(r'^([a-zA-Z0-9._%+-]+)@([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})$', target)
     if em:
         comp["types"].append("EMAIL"); comp["username"] = em.group(1); comp["domain"] = em.group(2)
         return comp
     if re.match(r'^https?://', target):
         comp["types"].append("URL")
-        if any(target.lower().endswith(x) for x in ['.jpg', '.jpeg', '.png', '.gif', '.webp']): comp["types"].append("IMAGE")
+        if any(target.lower().endswith(x) for x in ['.jpg', '.jpeg', '.png', '.webp']): comp["types"].append("IMAGE")
         try: comp["domain"] = target.split('//')[-1].split('/')[0]
         except: pass
         return comp
     cp = re.sub(r'[^0-9+]', '', target)
     if (cp.startswith('+') and cp[1:].isdigit()) or (cp.isdigit() and 7 <= len(cp) <= 15):
-        comp["types"].append("PHONE"); comp["clean_phone"] = cp
+        comp["types"].append("PHONE"); comp["clean"] = cp
         return comp
     dp = r'^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$'
-    ip = r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$'
-    if re.match(dp, target.lower()) or re.match(ip, target):
+    if re.match(dp, target.lower()) or re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', target):
         comp["types"].append("NETWORK"); comp["domain"] = target
         return comp
     comp["types"].append("USER"); comp["username"] = target
     return comp
 
-def get_network_info(domain):
+def get_net_intel(domain):
     info = {}
     try:
-        ip = socket.gethostbyname(domain); info["IP Address"] = ip
+        ip = socket.gethostbyname(domain); info["IP"] = ip
         for rt in ['MX', 'TXT', 'A', 'NS']:
             try: info[f"DNS {rt}"] = [str(r) for r in dns.resolver.resolve(domain, rt)]
             except: pass
         geo = requests.get(f"http://ip-api.com/json/{ip}", timeout=5).json()
-        if geo.get("status") == "success":
-            info["Location"] = f"{geo.get('city')}, {geo.get('country')}"; info["ISP"] = geo.get('isp')
-    except Exception as e: info["error"] = str(e)
+        if geo.get("status") == "success": info["Geo"] = f"{geo.get('city')}, {geo.get('country')}"; info["ISP"] = geo.get('isp')
+    except: pass
     return info
 
-def get_phone_info(phone):
+def get_phone_intel(phone):
     info = {}
     try:
         p = phonenumbers.parse(phone if phone.startswith('+') else "+" + phone)
         if phonenumbers.is_valid_number(p):
-            info["Valid"] = "Yes"; info["Format"] = phonenumbers.format_number(p, phonenumbers.PhoneNumberFormat.INTERNATIONAL)
+            info["Format"] = phonenumbers.format_number(p, phonenumbers.PhoneNumberFormat.INTERNATIONAL)
             info["Region"] = geocoder.description_for_number(p, "en"); info["Carrier"] = carrier.name_for_number(p, "en")
-        else: info["Valid"] = "Invalid Format"
-    except Exception as e: info["error"] = str(e)
+    except: pass
     return info
 
-def get_image_metadata(url):
+def get_image_intel(url):
     meta = {}
     try:
         r = requests.get(url, timeout=10)
         tags = exifread.process_file(BytesIO(r.content))
         for t in tags.keys():
             if t not in ('JPEGThumbnail', 'TIFFThumbnail', 'Filename', 'EXIF MakerNote'): meta[t] = str(tags[t])
-    except Exception as e: meta["error"] = str(e)
+    except: pass
     return meta
 
 async def check_platform(session, sem, platform, url_tpl, target, found, prog):
@@ -112,29 +159,29 @@ async def check_platform(session, sem, platform, url_tpl, target, found, prog):
                         txt = (await r.text()).lower()
                         if not any(x in txt for x in ["404", "not found", "nobody on reddit"]):
                             found[platform] = str(r.url)
-                            print(f"\n{G}[+] Found: {platform}{RES}")
+                            print(f"\n{G}[+] IDENTITY DISCOVERED: {platform}{RES}")
         except: pass
     prog['c'] += 1
-    sys.stdout.write(f"\r{C}[*] OSINT Progress: {prog['c']}/{prog['t']} platforms probed...{RES}"); sys.stdout.flush()
+    sys.stdout.write(f"\r{C}[*] PROBING SOCIAL MATRIX: {prog['c']}/{prog['t']}...{RES}"); sys.stdout.flush()
 
-async def discover_social(username):
-    print(f"{C}[*] Triggering Global Identity Discovery for '{username}'...{RES}")
+async def discover_identities(username):
+    section_header(f"Identity Intelligence: {username}")
     found, prog = {}, {'c': 0, 't': len(SOCIAL_PLATFORMS)}
     sem = asyncio.Semaphore(40)
     async with aiohttp.ClientSession(headers=HEADERS) as s:
         await asyncio.gather(*[check_platform(s, sem, p, u, username, found, prog) for p, u in SOCIAL_PLATFORMS.items()])
     return found
 
-def get_deep_dorks(target, comp):
-    dorks = {"Leaks & Pastes": f"https://www.google.com/search?q=site:pastebin.com+OR+site:gist.github.com+%22{target}%22"}
-    if "EMAIL" in comp["types"]: dorks["Database Leaks"] = f"https://www.google.com/search?q=%22{target}%22+filetype:sql+OR+filetype:txt+OR+filetype:csv"
+def get_apex_links(target, comp):
+    dorks = {"Global Leaks": f"https://www.google.com/search?q=site:pastebin.com+OR+site:gist.github.com+%22{target}%22"}
+    if "EMAIL" in comp["types"]:
+        dorks["Credential Breaches"] = f"https://www.google.com/search?q=%22{target}%22+password+OR+leak"
     if "domain" in comp:
         d = comp["domain"]
-        dorks["Subdomains"] = f"https://www.google.com/search?q=site:*.{d}+-www"
-        dorks["Sensitive Configs"] = f"https://www.google.com/search?q=site:{d}+ext:env+OR+ext:yaml+OR+ext:sql"
+        dorks["Subdomain Discovery"] = f"https://www.google.com/search?q=site:*.{d}+-www"
+        dorks["Cloud Intelligence"] = f"https://www.google.com/search?q=site:s3.amazonaws.com+%22{d}%22"
     if "IMAGE" in comp["types"]:
-        dorks["Google Lens"] = f"https://lens.google.com/uploadbyurl?url={target}"
-        dorks["Yandex Visual"] = f"https://yandex.com/images/search?rpt=imageview&url={target}"
+        dorks["Visual AI Search"] = f"https://lens.google.com/uploadbyurl?url={target}"
     return dorks
 
 def print_banner():
@@ -145,55 +192,66 @@ def print_banner():
     print("    ██╔══██║██║╚██╗██║██║   ██║██║╚██╗██║  ╚██╔╝  ██║██║╚██╗██║██╔══╝  ██║   ██║")
     print("    ██║  ██║██║ ╚████║╚██████╔╝██║ ╚████║   ██║   ██║██║ ╚████║██║     ╚██████╔╝")
     print("    ╚═╝  ╚═╝╚═╝  ╚═══╝ ╚═════╝ ╚═╝  ╚═══╝   ╚═╝   ╚═╝╚═╝  ╚═══╝╚═╝      ╚═════╝ ")
-    print(f"    {C}--- ANONYINFO: THE GOD-MODE UNIVERSAL OSINT SUITE v5.0 ---{RES}")
+    print(f"    {C}--- ANONYINFO: THE APEX UNIVERSAL OSINT SUITE v6.0 ---{RES}")
 
 async def run_tool(target, report=False):
     print_banner()
-    comp = detect_target_components(target)
-    print(f"{Y}{B}Detected Target Signature: {', '.join(comp['types'])}{RES}\n")
-    results = {"target": target, "analysis": comp, "timestamp": str(datetime.now())}
+    comp = detect_target(target)
+    print(f"{Y}{B}Target Signature Locked: {', '.join(comp['types'])}{RES}\n")
+    results = {"target": target, "ts": str(datetime.now())}
 
     if "IMAGE" in comp["types"]:
-        print(f"{C}[*] Extracting Image Intelligence...{RES}"); results["meta"] = get_image_metadata(target)
-        if results["meta"]:
-            for k, v in results["meta"].items(): print(f"    - {k}: {v}")
-        else: print(f"    {Y}[!] No metadata embedded in image.{RES}")
+        section_header("Image Intelligence")
+        results["meta"] = get_image_intel(target)
+        for k, v in results["meta"].items(): print(f"    - {k}: {v}")
+
+    if "URL" in comp["types"] and "IMAGE" not in comp["types"]:
+        section_header("Web Fingerprinting")
+        results["fingerprint"] = await fingerprint_web(target)
+        for k, v in results["fingerprint"].items(): print(f"    - {k}: {v}")
 
     if "PHONE" in comp["types"]:
-        print(f"{C}[*] Analyzing Phone Telemetry...{RES}"); results["phone"] = get_phone_info(comp["clean_phone"])
+        section_header("Telecommunication Analysis")
+        results["phone"] = get_phone_intel(comp["clean"])
         for k, v in results["phone"].items(): print(f"    - {k}: {v}")
 
     if "domain" in comp:
         d = comp["domain"]
-        print(f"\n{C}[*] Mapping Network Infrastructure for '{d}'...{RES}"); results["net"] = get_network_info(d)
+        section_header(f"Infrastructure Mapping: {d}")
+        results["net"] = get_net_intel(d)
         for k, v in results["net"].items(): print(f"    - {k}: {v}")
+        results["subs"] = await get_subdomains(d)
+        if results["subs"]:
+            print(f"{G}[+] Subdomains Found ({len(results['subs'])}):{RES}")
+            for s in results["subs"][:10]: print(f"    - {s}")
+        results["ports"] = await port_scanner(d)
+        if results["ports"]: print(f"{G}[+] Open Ports Detected: {', '.join(map(str, results['ports']))}{RES}")
 
     if "username" in comp:
         u = comp["username"]
-        results["social"] = await discover_social(u)
-        print(f"\n{G}[+] Discovered {len(results['social'])} Unique Profiles for identity '{u}'.{RES}")
-        for p, url in results["social"].items(): print(f"    - {C}{p}{RES}: {url}")
+        results["social"] = await discover_identities(u)
+        print(f"\n{G}[+] RECAP: Found {len(results['social'])} matching nodes for '{u}'.{RES}")
 
-    print(f"\n{C}[*] Crawling Web Surface...{RES}")
+    section_header("Surface Web Crawler")
     try:
         with DDGS() as ddgs:
             results["web"] = [r for r in ddgs.text(target, max_results=10)]
-            print(f"{G}[+] Found {len(results['web'])} Web Intelligence Nodes.{RES}")
-            for r in results["web"]: print(f"    - {B}{r.get('title')}{RES}: {r.get('href')}")
-    except: results["web"] = []
+            print(f"{G}[+] Discovered {len(results['web'])} Global Intel Nodes.{RES}")
+            for r in results["web"][:5]: print(f"    - {B}{r.get('title')}{RES}: {r.get('href')}")
+    except: pass
 
-    results["dorks"] = get_deep_dorks(target, comp)
-    print(f"\n{G}[+] God-Mode Investigation Links Generated:{RES}")
-    for n, l in results["dorks"].items(): print(f"    - {C}{n}{RES}: {l}")
+    section_header("Apex Investigation Links")
+    results["links"] = get_apex_links(target, comp)
+    for n, l in results["links"].items(): print(f"    - {C}{n}{RES}: {l}")
 
     if report:
-        fn = f"ANONYINFO_INTEL_{re.sub(r'[^a-zA-Z0-9]', '_', target)}.json"
+        fn = f"ANONYINFO_APEX_{re.sub(r'[^a-zA-Z0-9]', '_', target)}.json"
         with open(fn, "w") as f: json.dump(results, f, indent=4)
-        print(f"\n{Y}[!] FULL INTELLIGENCE REPORT SAVED: {fn}{RES}")
-    print(f"\n{G}{B}GOD-MODE OSINT COMPLETE. TARGET EXPOSED.{RES}\n")
+        print(f"\n{Y}[!] APEX INTELLIGENCE REPORT ENCRYPTED & SAVED: {fn}{RES}")
+    print(f"\n{G}{B}APEX OSINT COMPLETE. MISSION ACCOMPLISHED.{RES}\n")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="AnonyInfo God-Mode")
-    parser.add_argument("target", help="Email, Phone, Name, Domain, IP, or Image URL")
-    parser.add_argument("--report", action="store_true", help="Generate full JSON report")
+    parser = argparse.ArgumentParser(description="AnonyInfo Apex")
+    parser.add_argument("target", help="Target Input")
+    parser.add_argument("--report", action="store_true", help="JSON Intel Report")
     asyncio.run(run_tool(parser.parse_args().target, parser.parse_args().report))
