@@ -4,3 +4,5 @@ aiohttp
 dnspython
 phonenumbers
 exifread
+Flask
+flask-cors
