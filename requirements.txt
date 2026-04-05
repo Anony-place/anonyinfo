@@ -3,3 +3,5 @@ ddgs==9.12.1
 aiohttp
 dnspython
 phonenumbers
+exifread
+Pillow
