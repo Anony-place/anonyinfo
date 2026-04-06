@@ -1,39 +1,51 @@
-# AnonyInfo - The Universal Open-Source OSINT Tool
+# AnonyInfo
 
-AnonyInfo is a powerful, high-performance OSINT suite that gathers intelligence from across the web without requiring any private API keys or developer accounts. It features automatic input detection and asynchronous probing for maximum speed.
+AnonyInfo is now a CLI-first investigation tool built around one seed input that expands into multiple entities, enrichment modules, and a saved case dossier.
 
 ## Features
 
-*   **Universal Input Detection:** Automatically handles Names, Usernames, Emails, Phone Numbers, Domains, IPs, and Image URLs.
-*   **High-Speed Discovery:** Asynchronous probing of 80+ social media platforms.
-*   **Network Intelligence:** Automatic DNS record resolution (MX, TXT, A, NS) and IP geolocation.
-*   **Phone OSINT:** International formatting, country/carrier detection, and regional lookups.
-*   **Reverse Image Search:** Instant generation of investigation links for Google Lens, Yandex, and Bing.
-*   **Deep Web Search:** Clean, integrated web search results via DuckDuckGo.
-*   **Investigation Links:** Automated generation of deep-search dorks for leaks, LinkedIn, and more.
-*   **JSON Reporting:** Save all findings into structured report files.
+- Canonical entity normalization for emails, usernames, domains, IPs, URLs, phone numbers, and image URLs
+- Plugin-style module registry for social discovery, network intel, phone intel, image metadata, web search, fingerprinting, exposure checks, ports, and relationship leads
+- Recursive entity expansion plus certificate-transparency-backed subdomain discovery
+- Registration intel for domains and IPs using public RDAP data
+- Saved investigation store with `cases`, `entities`, `findings`, `relationships`, `artifacts`, `module_runs`, and per-module cache
+- Console, JSON, HTML dossier, Mermaid graph, and CSV evidence export paths
+- Case comparison plus investigation scoring and module-health summaries
+- Dashboard viewer with case graph preview and lead inspection
+- Backward-compatible legacy CLI support
 
 ## Installation
 
-1.  Clone the repository:
-    ```bash
-    git clone https://github.com/your-username/AnonyInfo.git
-    ```
-2.  Install the dependencies:
-    ```bash
-    pip install -r requirements.txt
-    ```
+```bash
+pip install -r requirements.txt
+```
 
 ## Usage
 
 ```bash
-# General Search (Name, Username, Email, Phone, Domain, IP, or Image URL)
-python anonyinfo.py <target>
+# Legacy compatibility
+python anonyinfo.py example.com
+python anonyinfo.py example.com --report
 
-# Generate a JSON Report
-python anonyinfo.py <target> --report
+# New investigation flow
+python anonyinfo.py investigate example.com
+python anonyinfo.py investigate someone@example.com --full
+python anonyinfo.py investigate https://example.com --format html --output dossier.html
+python anonyinfo.py investigate example.com --format graph --output graph.mmd
+python anonyinfo.py investigate user123 --modules social,web,links --depth deep
+
+# Read saved cases
+python anonyinfo.py case show <case_id> --format console --full
+python anonyinfo.py case export <case_id> --format json --output case.json
+python anonyinfo.py case export <case_id> --format csv --output findings.csv
+python anonyinfo.py case export <case_id> --format graph --output graph.mmd
+python anonyinfo.py case compare <case_a> <case_b>
 ```
 
-## Contributing
+## Dashboard
 
-This tool is entirely free and open-source. Contributions are welcome!
+```bash
+python dashboard.py
+```
+
+Then open `http://localhost:5000`.

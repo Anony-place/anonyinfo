@@ -1,297 +1,330 @@
+from __future__ import annotations
+
 import argparse
-import requests
-import json
-import re
-import socket
 import asyncio
-import aiohttp
-from duckduckgo_search import DDGS
-from datetime import datetime
+import json
 import sys
-import os
-import dns.resolver
-import phonenumbers
-from phonenumbers import geocoder, carrier
-import exifread
-from io import BytesIO
-import logging
-from logging.handlers import RotatingFileHandler
-from database import init_db, save_intel, get_cached_intel
-from engine import analyze_relationships
+from pathlib import Path
 
-# --- Logging Setup ---
-LOG_FILE = "anonyinfo_mission.log"
-logger = logging.getLogger("AnonyInfo")
-logger.setLevel(logging.INFO)
-handler = RotatingFileHandler(LOG_FILE, maxBytes=1000000, backupCount=5)
-handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-logger.addHandler(handler)
+import database
+from anonyinfo_core.dossier import CaseBuilder
+from anonyinfo_core.normalizer import InputNormalizer
+from anonyinfo_core.modules import build_default_registry
+from anonyinfo_core.orchestrator import InvestigationOrchestrator, dumps_case_json
+from anonyinfo_core.scoring import ResultScorer
 
-# --- APEX PLATFORM DATABASE ---
-SOCIAL_PLATFORMS = {
-    "GitHub": "https://github.com/{}", "YouTube": "https://www.youtube.com/@{}", "Twitch": "https://www.twitch.tv/{}", "Reddit": "https://www.reddit.com/user/{}",
-    "Medium": "https://medium.com/@{}", "Pinterest": "https://www.pinterest.com/{}", "Tumblr": "https://{}.tumblr.com", "Mastodon": "https://mastodon.social/@{}",
-    "Substack": "https://{}.substack.com", "Twitter/X": "https://x.com/{}", "Quora": "https://www.quora.com/profile/{}", "VK": "https://vk.com/{}",
-    "OK.ru": "https://ok.ru/{}", "Weibo": "https://weibo.com/{}", "Linktree": "https://linktr.ee/{}", "Snapchat": "https://www.snapchat.com/add/{}",
-    "Telegram": "https://t.me/{}", "TikTok": "https://www.tiktok.com/@{}", "Discord": "https://discord.com/users/{}", "Clubhouse": "https://www.clubhouse.com/@{}",
-    "Instagram": "https://www.instagram.com/{}/", "Facebook": "https://www.facebook.com/{}", "Threads": "https://www.threads.net/@{}",
-    "LinkedIn": "https://www.linkedin.com/in/{}", "Crunchbase": "https://www.crunchbase.com/person/{}", "AngelList": "https://angel.co/u/{}",
-    "Fiverr": "https://www.fiverr.com/{}", "Upwork": "https://www.upwork.com/freelancers/~{}", "Freelancer": "https://www.freelancer.com/u/{}",
-    "About.me": "https://about.me/{}", "Behance": "https://www.behance.net/{}", "Dribbble": "https://dribbble.com/{}", "Canva": "https://www.canva.com/{}",
-    "ProductHunt": "https://www.producthunt.com/@{}", "Goodreads": "https://www.goodreads.com/{}", "Wattpad": "https://www.wattpad.com/user/{}",
-    "TripAdvisor": "https://www.tripadvisor.com/members/{}", "Duolingo": "https://www.duolingo.com/profile/{}", "Strava": "https://www.strava.com/athletes/{}",
-    "HackTheBox": "https://www.hackthebox.eu/home/users/profile/{}", "TryHackMe": "https://tryhackme.com/p/{}", "Bugcrowd": "https://bugcrowd.com/{}",
-    "HackerOne": "https://hackerone.com/{}", "LeetCode": "https://leetcode.com/{}", "Hackerrank": "https://www.hackerrank.com/{}",
-    "Kaggle": "https://www.kaggle.com/{}", "StackOverflow": "https://stackoverflow.com/users/{}", "HackerNews": "https://news.ycombinator.com/user?id={}",
-    "GitLab": "https://gitlab.com/{}", "Bitbucket": "https://bitbucket.org/{}", "CodePen": "https://codepen.io/{}", "PyPi": "https://pypi.org/user/{}",
-    "Steam": "https://steamcommunity.com/id/{}", "Roblox": "https://www.roblox.com/user.aspx?username={}", "Chess.com": "https://www.chess.com/member/{}",
-    "EpicGames": "https://www.epicgames.com/id/{}", "GOG": "https://www.gog.com/u/{}", "Itch.io": "https://{}.itch.io", "Speedrun": "https://www.speedrun.com/user/{}",
-    "NexusMods": "https://www.nexusmods.com/users/{}", "Osu!": "https://osu.ppy.sh/users/{}", "BattleNet": "https://worldofwarcraft.com/en-us/character/us/{}/",
-}
 
-COMMON_PORTS = [21, 22, 23, 25, 53, 80, 110, 143, 443, 445, 3306, 3389, 5432, 6379, 8080, 8443, 27017]
-PENTEST_FILES = [".git/config", ".env", "phpinfo.php", "config.php", "wp-config.php", "robots.txt", "sitemap.xml", ".htaccess", "admin/", "backup.sql", "dump.sql"]
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="AnonyInfo CLI-first investigation suite")
+    subparsers = parser.add_subparsers(dest="command")
 
-# --- ANSI Colors ---
-G, C, Y, R, B, RES = '\033[92m', '\033[96m', '\033[93m', '\033[91m', '\033[1m', '\033[0m'
-HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'}
+    investigate = subparsers.add_parser("investigate", help="Run a new investigation")
+    investigate.add_argument("target_input", help="Seed input for investigation")
+    investigate.add_argument("--full", action="store_true", help="Show expanded console output")
+    investigate.add_argument("--format", choices=["console", "json", "html", "graph"], default="console", help="Output format")
+    investigate.add_argument("--modules", help="Comma-separated module names to run")
+    investigate.add_argument("--depth", choices=["standard", "deep"], default="standard", help="Investigation depth")
+    investigate.add_argument("--nocache", action="store_true", help="Bypass per-module cache")
+    investigate.add_argument("--output", help="Write JSON or HTML dossier to a file")
+    investigate.add_argument("--report", action="store_true", help="Alias that writes JSON dossier to disk")
 
-def section_header(title):
-    print(f"\n{B}{Y}>>> [{title.upper()}] <<<{RES}")
+    case_parser = subparsers.add_parser("case", help="Read previously saved cases")
+    case_subparsers = case_parser.add_subparsers(dest="case_command")
+    show = case_subparsers.add_parser("show", help="Show a saved case")
+    show.add_argument("case_id")
+    show.add_argument("--format", choices=["console", "json", "html", "graph"], default="console")
+    show.add_argument("--full", action="store_true")
+    export = case_subparsers.add_parser("export", help="Export a saved case")
+    export.add_argument("case_id")
+    export.add_argument("--format", choices=["json", "html", "csv", "graph"], default="json")
+    export.add_argument("--output", help="Destination file path")
+    compare = case_subparsers.add_parser("compare", help="Compare two saved cases")
+    compare.add_argument("left_case_id")
+    compare.add_argument("right_case_id")
+    compare.add_argument("--format", choices=["console", "json"], default="console")
+    rerun = case_subparsers.add_parser("rerun", help="Rerun an existing case")
+    rerun.add_argument("case_id")
+    rerun.add_argument("--modules", help="Comma-separated module names to rerun")
+    rerun.add_argument("--depth", choices=["standard", "deep"], help="Override depth")
+    rerun.add_argument("--format", choices=["console", "json", "html", "graph"], default="console")
 
-# --- Advanced Modules ---
+    watch_parser = subparsers.add_parser("watch", help="Manage watch targets")
+    watch_subparsers = watch_parser.add_subparsers(dest="watch_command")
+    watch_add = watch_subparsers.add_parser("add", help="Add a watch target")
+    watch_add.add_argument("target_input")
+    watch_list = watch_subparsers.add_parser("list", help="List watch targets")
 
-async def probe_vulnerabilities(base_url):
-    logger.info(f"Probing vulnerabilities for {base_url}")
-    found = []
-    async with aiohttp.ClientSession(headers=HEADERS) as session:
-        for f in PENTEST_FILES:
-            url = f"{base_url.rstrip('/')}/{f}"
-            try:
-                async with session.get(url, timeout=5, allow_redirects=False) as resp:
-                    if resp.status == 200:
-                        print(f"{R}[!] VULNERABILITY DETECTED: {f} is exposed!{RES}")
-                        found.append(url)
-            except Exception as e:
-                logger.error(f"Error probing {url}: {e}")
-    return found
+    note_parser = subparsers.add_parser("note", help="Manage case notes")
+    note_subparsers = note_parser.add_subparsers(dest="note_command")
+    note_add = note_subparsers.add_parser("add", help="Add a case note")
+    note_add.add_argument("case_id")
+    note_add.add_argument("note_text")
+    note_add.add_argument("--entity-id")
+    note_list = note_subparsers.add_parser("list", help="List notes for a case")
+    note_list.add_argument("case_id")
 
-async def fingerprint_web(url):
-    logger.info(f"Fingerprinting {url}")
-    fp = {}
+    connector_parser = subparsers.add_parser("connector", help="Manage opt-in connectors")
+    connector_subparsers = connector_parser.add_subparsers(dest="connector_command")
+    connector_add = connector_subparsers.add_parser("add", help="Add a connector account")
+    connector_add.add_argument("provider")
+    connector_add.add_argument("--label", required=True)
+    connector_add.add_argument("--config", default="{}", help="JSON config payload")
+    connector_list = connector_subparsers.add_parser("list", help="List connector accounts")
+
+    return parser
+
+
+def parse_args():
+    if len(sys.argv) > 1 and sys.argv[1] not in {"investigate", "case", "watch", "note", "connector", "-h", "--help"}:
+        legacy_parser = argparse.ArgumentParser(description="AnonyInfo legacy compatibility mode")
+        legacy_parser.add_argument("target_input")
+        legacy_parser.add_argument("--report", action="store_true")
+        legacy_parser.add_argument("--nocache", action="store_true")
+        args = legacy_parser.parse_args()
+        args.command = "investigate"
+        args.full = False
+        args.format = "console"
+        args.modules = None
+        args.depth = "standard"
+        args.output = None
+        return args
+
+    parser = build_parser()
+    args = parser.parse_args()
+    return args
+
+
+def selected_modules(raw: str | None):
+    if not raw:
+        return None
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+async def run_investigation(args):
+    database.init_db()
+    registry = build_default_registry()
+    orchestrator = InvestigationOrchestrator(registry, database)
+    _, dossier = await orchestrator.investigate(
+        args.target_input,
+        depth=args.depth,
+        selected_modules=selected_modules(args.modules),
+        use_cache=not args.nocache,
+    )
+    builder = CaseBuilder()
+    rendered = render_dossier(builder, dossier, args.format, args.full)
+    output_path = None
+    if args.report and not args.output:
+        safe_name = "".join(ch if ch.isalnum() else "_" for ch in args.target_input)
+        args.output = f"ANONYINFO_CASE_{safe_name}.json"
+        args.format = "json"
+        rendered = render_dossier(builder, dossier, args.format, args.full)
+    if args.output:
+        output_path = Path(args.output)
+        output_path.write_text(rendered, encoding="utf-8")
+    return rendered, output_path
+
+
+async def rerun_case(args):
+    database.init_db()
+    original = database.get_case(args.case_id)
+    if not original:
+        raise SystemExit(f"Case not found: {args.case_id}")
+    rerun_job = database.create_rerun_job(args.case_id, selected_modules(args.modules), args.depth or original.depth)
+    registry = build_default_registry()
+    orchestrator = InvestigationOrchestrator(registry, database)
+    _, dossier = await orchestrator.investigate(
+        original.target_input,
+        depth=args.depth or original.depth,
+        selected_modules=selected_modules(args.modules) or original.modules,
+        use_cache=False,
+    )
+    database.complete_rerun_job(rerun_job["rerun_id"], dossier["case"]["id"])
+    builder = CaseBuilder()
+    return render_dossier(builder, dossier, args.format, full=True)
+
+
+def render_dossier(builder: CaseBuilder, dossier: dict, output_format: str, full: bool):
+    if output_format == "json":
+        return dumps_case_json(dossier)
+    if output_format == "html":
+        return builder.render_html(dossier)
+    if output_format == "graph":
+        return builder.render_graph(dossier["graph"])
+    return builder.render_console(dossier, full=full)
+
+
+def export_case(case_id: str, export_format: str, output: str | None):
+    case_record = database.get_case(case_id)
+    if not case_record:
+        raise SystemExit(f"Case not found: {case_id}")
+    builder = CaseBuilder()
+    dossier = builder.build(case_record)
+
+    if export_format == "csv":
+        lines = ["module,title,summary,entity_type,entity_value,confidence"]
+        for finding in dossier["evidence_table"]:
+            row = [
+                finding["module"],
+                finding["title"].replace(",", " "),
+                finding["summary"].replace(",", " "),
+                finding["entity_type"],
+                finding["entity_value"].replace(",", " "),
+                str(finding["confidence"]),
+            ]
+            lines.append(",".join(row))
+        rendered = "\n".join(lines)
+    else:
+        rendered = render_dossier(builder, dossier, export_format, full=True)
+
+    if output:
+        Path(output).write_text(rendered, encoding="utf-8")
+    return rendered
+
+
+def show_case(case_id: str, output_format: str, full: bool):
+    case_record = database.get_case(case_id)
+    if not case_record:
+        raise SystemExit(f"Case not found: {case_id}")
+    builder = CaseBuilder()
+    dossier = builder.build(case_record)
+    return render_dossier(builder, dossier, output_format, full)
+
+
+def compare_cases(left_case_id: str, right_case_id: str, output_format: str):
+    left_case = database.get_case(left_case_id)
+    right_case = database.get_case(right_case_id)
+    if not left_case:
+        raise SystemExit(f"Case not found: {left_case_id}")
+    if not right_case:
+        raise SystemExit(f"Case not found: {right_case_id}")
+    comparison = ResultScorer().compare_cases(left_case, right_case)
+    if output_format == "json":
+        return dumps_case_json(comparison)
+    lines = [
+        f"Compare {comparison['left_case_id']} vs {comparison['right_case_id']}",
+        f"Scores: left {comparison['left_score']} | right {comparison['right_score']}",
+        "",
+        f"Shared entities: {len(comparison['shared_entities'])}",
+    ]
+    lines.extend(f"- {item}" for item in comparison["shared_entities"][:12])
+    lines.append("")
+    lines.append(f"Left-only entities: {len(comparison['left_only_entities'])}")
+    lines.extend(f"- {item}" for item in comparison["left_only_entities"][:12])
+    lines.append("")
+    lines.append(f"Right-only entities: {len(comparison['right_only_entities'])}")
+    lines.extend(f"- {item}" for item in comparison["right_only_entities"][:12])
+    lines.append("")
+    lines.append(f"Shared modules: {', '.join(comparison['shared_modules']) if comparison['shared_modules'] else 'None'}")
+    return "\n".join(lines)
+
+
+def add_watch_target(target_input: str):
+    entities = InputNormalizer().normalize(target_input)
+    seed = entities[0]
+    item = database.add_watch_target(target_input, seed.entity_type, seed.value)
+    return f"Watch added: {item['watch_id']} -> {item['normalized_type']}:{item['normalized_value']}"
+
+
+def list_watch_targets():
+    rows = database.get_watch_targets()
+    if not rows:
+        return "No watch targets."
+    return "\n".join(
+        f"{row['watch_id']} | {row['normalized_type']}:{row['normalized_value']} | {row['status']} | last_case={row['last_case_id'] or '-'}"
+        for row in rows
+    )
+
+
+def add_case_note(case_id: str, note_text: str, entity_id: str | None):
+    note = database.add_case_note(case_id, note_text, entity_id=entity_id)
+    return f"Note added: {note['note_id']} for {case_id}"
+
+
+def list_case_notes(case_id: str):
+    notes = database.get_case_notes(case_id)
+    if not notes:
+        return "No notes."
+    return "\n".join(f"{item['created_at']} | {item['entity_id'] or '-'} | {item['note_text']}" for item in notes)
+
+
+def add_connector(provider: str, label: str, config_raw: str):
     try:
-        async with aiohttp.ClientSession(headers=HEADERS) as session:
-            async with session.get(url, timeout=10) as resp:
-                fp["Server"] = resp.headers.get("Server", "Unknown")
-                text = (await resp.text()).lower()
-                if "wp-content" in text: fp["CMS"] = "WordPress"
-                elif "shopify" in text: fp["CMS"] = "Shopify"
-                else: fp["CMS"] = "Unknown"
-                fp["Headers"] = [h for h in ["Content-Security-Policy", "Strict-Transport-Security"] if h in resp.headers]
-    except Exception as e:
-        logger.error(f"Fingerprint failed for {url}: {e}")
-    return fp
+        config = json.loads(config_raw)
+    except json.JSONDecodeError as exc:
+        if "=" in config_raw:
+            config = {}
+            for item in config_raw.split(","):
+                if "=" not in item:
+                    raise SystemExit(f"Invalid connector config JSON: {exc}")
+                key, value = item.split("=", 1)
+                config[key.strip()] = value.strip()
+        else:
+            raise SystemExit(f"Invalid connector config JSON: {exc}")
+    item = database.add_connector_account(provider, label, config)
+    return f"Connector added: {item['connector_id']} [{item['provider']}] {item['label']}"
 
-async def get_subdomains(domain):
-    logger.info(f"Enumerate subdomains for {domain}")
-    subs = set()
-    try:
-        async with aiohttp.ClientSession() as s:
-            async with s.get(f"https://crt.sh/?q=%25.{domain}&output=json", timeout=20) as r:
-                if r.status == 200:
-                    for e in await r.json():
-                        for x in e['name_value'].split("\n"):
-                            if x.endswith(domain) and "*" not in x: subs.add(x.strip().lower())
-    except Exception as e:
-        logger.error(f"crt.sh failed for {domain}: {e}")
-    return sorted(list(subs))
 
-async def scan_port(ip, port):
-    try:
-        conn = asyncio.open_connection(ip, port)
-        await asyncio.wait_for(conn, timeout=1.0); return port
-    except: return None
+def list_connectors():
+    rows = database.get_connector_accounts()
+    if not rows:
+        return "No connectors configured."
+    return "\n".join(
+        f"{row['connector_id']} | {row['provider']} | {row['label']} | {row['status']}"
+        for row in rows
+    )
 
-async def port_scanner(target):
-    logger.info(f"Port scanning {target}")
-    try:
-        ip = socket.gethostbyname(target)
-        res = await asyncio.gather(*[scan_port(ip, p) for p in COMMON_PORTS])
-        return [p for p in res if p]
-    except Exception as e:
-        logger.error(f"Port scan failed for {target}: {e}")
-        return []
 
-def detect_target(target):
-    comp = {"orig": target, "types": []}
-    em = re.match(r'^([a-zA-Z0-9._%+-]+)@([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})$', target)
-    if em:
-        comp["types"].append("EMAIL"); comp["username"] = em.group(1); comp["domain"] = em.group(2)
-        return comp
-    if re.match(r'^https?://', target):
-        comp["types"].append("URL")
-        if any(target.lower().endswith(x) for x in ['.jpg', '.jpeg', '.png', '.webp']): comp["types"].append("IMAGE")
-        try: comp["domain"] = target.split('//')[-1].split('/')[0]
-        except: pass
-        return comp
-    cp = re.sub(r'[^0-9+]', '', target)
-    if (cp.startswith('+') and cp[1:].isdigit()) or (cp.isdigit() and 7 <= len(cp) <= 15):
-        comp["types"].append("PHONE"); comp["clean"] = cp
-        return comp
-    dp = r'^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$'
-    if re.match(dp, target.lower()) or re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', target):
-        comp["types"].append("NETWORK"); comp["domain"] = target
-        return comp
-    comp["types"].append("USER"); comp["username"] = target
-    return comp
+def main():
+    args = parse_args()
+    if args.command == "investigate":
+        rendered, output_path = asyncio.run(run_investigation(args))
+        print(rendered)
+        if output_path:
+            print(f"\nSaved dossier to {output_path}")
+        return
 
-def get_net_intel(domain):
-    info = {}
-    try:
-        ip = socket.gethostbyname(domain); info["IP Address"] = ip
-        for rt in ['MX', 'TXT', 'A', 'NS']:
-            try: info[f"DNS {rt}"] = [str(r) for r in dns.resolver.resolve(domain, rt)]
-            except: pass
-        geo = requests.get(f"http://ip-api.com/json/{ip}", timeout=5).json()
-        if geo.get("status") == "success": info["Location"] = f"{geo.get('city')}, {geo.get('country')}"; info["ISP"] = geo.get('isp')
-    except Exception as e:
-        logger.error(f"Net intel failed for {domain}: {e}")
-    return info
+    if args.command == "case" and args.case_command == "show":
+        print(show_case(args.case_id, args.format, args.full))
+        return
 
-def get_phone_intel(phone):
-    info = {}
-    try:
-        p = phonenumbers.parse(phone if phone.startswith('+') else "+" + phone)
-        if phonenumbers.is_valid_number(p):
-            info["Format"] = phonenumbers.format_number(p, phonenumbers.PhoneNumberFormat.INTERNATIONAL)
-            info["Region"] = geocoder.description_for_number(p, "en"); info["Carrier"] = carrier.name_for_number(p, "en")
-    except Exception as e:
-        logger.error(f"Phone intel failed: {e}")
-    return info
+    if args.command == "case" and args.case_command == "export":
+        print(export_case(args.case_id, args.format, args.output))
+        return
 
-def get_image_intel(url):
-    meta = {}
-    try:
-        r = requests.get(url, timeout=10)
-        tags = exifread.process_file(BytesIO(r.content))
-        for t in tags.keys():
-            if t not in ('JPEGThumbnail', 'TIFFThumbnail', 'Filename', 'EXIF MakerNote'): meta[t] = str(tags[t])
-    except Exception as e:
-        logger.error(f"Image intel failed: {e}")
-    return meta
+    if args.command == "case" and args.case_command == "compare":
+        print(compare_cases(args.left_case_id, args.right_case_id, args.format))
+        return
 
-async def check_platform(session, sem, platform, url_tpl, target, found, prog):
-    url = url_tpl.format(target)
-    async with sem:
-        try:
-            async with session.get(url, timeout=10, allow_redirects=True) as r:
-                if r.status == 200:
-                    fu = str(r.url).lower()
-                    if not any(x in fu for x in ["login", "signup", "register", "404"]):
-                        txt = (await r.text()).lower()
-                        if not any(x in txt for x in ["404", "not found", "nobody on reddit"]):
-                            found[platform] = str(r.url)
-                            print(f"\n{G}[+] IDENTITY DISCOVERED: {platform}{RES}")
-        except Exception as e:
-            logger.debug(f"Probing {platform} failed: {e}")
-    prog['c'] += 1
-    sys.stdout.write(f"\r{C}[*] PROBING SOCIAL MATRIX: {prog['c']}/{prog['t']}...{RES}"); sys.stdout.flush()
+    if args.command == "case" and args.case_command == "rerun":
+        print(asyncio.run(rerun_case(args)))
+        return
 
-async def discover_identities(username):
-    section_header(f"Identity Intelligence: {username}")
-    found, prog = {}, {'c': 0, 't': len(SOCIAL_PLATFORMS)}
-    sem = asyncio.Semaphore(40)
-    async with aiohttp.ClientSession(headers=HEADERS) as s:
-        await asyncio.gather(*[check_platform(s, sem, p, u, username, found, prog) for p, u in SOCIAL_PLATFORMS.items()])
-    return found
+    if args.command == "watch" and args.watch_command == "add":
+        print(add_watch_target(args.target_input))
+        return
 
-def get_apex_links(target, comp):
-    dorks = {"Global Leaks": f"https://www.google.com/search?q=site:pastebin.com+OR+site:gist.github.com+%22{target}%22"}
-    if "EMAIL" in comp["types"]: dorks["Credential Breaches"] = f"https://www.google.com/search?q=%22{target}%22+password+OR+leak"
-    if "domain" in comp:
-        d = comp["domain"]
-        dorks["Subdomain Discovery"] = f"https://www.google.com/search?q=site:*.{d}+-www"
-        dorks["Cloud Intelligence"] = f"https://www.google.com/search?q=site:s3.amazonaws.com+%22{d}%22"
-    if "IMAGE" in comp["types"]: dorks["Visual AI Search"] = f"https://lens.google.com/uploadbyurl?url={target}"
-    return dorks
+    if args.command == "watch" and args.watch_command == "list":
+        print(list_watch_targets())
+        return
 
-def print_banner():
-    print(f"{G}{B}")
-    print("    █████╗ ███╗   ██╗ ██████╗ ███╗   ██╗██╗   ██╗██╗███╗   ██╗███████╗ ██████╗ ")
-    print("    ██╔══██╗████╗  ██║██╔═══██╗████╗  ██║╚██╗ ██╔╝██║████╗  ██║██╔════╝██╔═══██╗")
-    print("    ███████║██╔██╗ ██║██║   ██║██╔██╗ ██║ ╚████╔╝ ██║██╔██╗ ██║█████╗  ██║   ██║")
-    print("    ██╔══██║██║╚██╗██║██║   ██║██║╚██╗██║  ╚██╔╝  ██║██║╚██╗██║██╔══╝  ██║   ██║")
-    print("    ██║  ██║██║ ╚████║╚██████╔╝██║ ╚████║   ██║   ██║██║ ╚████║██║     ╚██████╔╝")
-    print("    ╚═╝  ╚═╝╚═╝  ╚═══╝ ╚═════╝ ╚═╝  ╚═══╝   ╚═╝   ╚═╝╚═╝  ╚═══╝╚═╝      ╚═════╝ ")
-    print(f"    {C}--- ANONYINFO: THE ULTRA-GOD OSINT & PENTEST SUITE v7.0 ---{RES}")
+    if args.command == "note" and args.note_command == "add":
+        print(add_case_note(args.case_id, args.note_text, args.entity_id))
+        return
 
-async def run_tool(target, report=False, nocache=False):
-    init_db()
-    logger.info(f"Starting mission for target: {target}")
-    if not nocache:
-        cached = get_cached_intel(target)
-        if cached:
-            print(f"{G}[+] LOADED FROM VAULT (CACHED DATA):{RES}")
-            print(json.dumps(cached, indent=4)); return
+    if args.command == "note" and args.note_command == "list":
+        print(list_case_notes(args.case_id))
+        return
 
-    print_banner()
-    comp = detect_target(target); results = {"target": target, "ts": str(datetime.now()), "data": {}}
+    if args.command == "connector" and args.connector_command == "add":
+        print(add_connector(args.provider, args.label, args.config))
+        return
 
-    if "IMAGE" in comp["types"]:
-        section_header("Image Intelligence"); results["data"]["meta"] = get_image_intel(target)
-        for k, v in results["data"]["meta"].items(): print(f"    - {k}: {v}")
+    if args.command == "connector" and args.connector_command == "list":
+        print(list_connectors())
+        return
 
-    if "URL" in comp["types"] and "IMAGE" not in comp["types"]:
-        section_header("Web Fingerprinting"); results["data"]["fingerprint"] = await fingerprint_web(target)
-        for k, v in results["data"]["fingerprint"].items(): print(f"    - {k}: {v}")
-        results["data"]["vulns"] = await probe_vulnerabilities(target)
+    build_parser().print_help()
 
-    if "PHONE" in comp["types"]:
-        section_header("Telecommunication Analysis"); results["data"]["phone"] = get_phone_intel(comp["clean"])
-        for k, v in results["data"]["phone"].items(): print(f"    - {k}: {v}")
-
-    if "domain" in comp:
-        d = comp["domain"]
-        section_header(f"Infrastructure Mapping: {d}"); results["data"]["net"] = get_net_intel(d)
-        for k, v in results["data"]["net"].items(): print(f"    - {k}: {v}")
-        results["data"]["subs"] = await get_subdomains(d)
-        if results["data"]["subs"]:
-            print(f"{G}[+] Subdomains Found ({len(results['data']['subs'])}):{RES}")
-            for s in results["data"]["subs"][:10]: print(f"    - {s}")
-        results["data"]["ports"] = await port_scanner(d)
-        if results["data"]["ports"]: print(f"{G}[+] Open Ports Detected: {', '.join(map(str, results['data']['ports']))}{RES}")
-        if "URL" not in comp["types"]: results["data"]["vulns"] = await probe_vulnerabilities(f"http://{d}")
-
-    if "username" in comp:
-        u = comp["username"]; results["data"]["social"] = await discover_identities(u)
-        print(f"\n{G}[+] RECAP: Found {len(results['data']['social'])} matching nodes for '{u}'.{RES}")
-
-    section_header("Surface Web Crawler")
-    try:
-        with DDGS() as ddgs:
-            results["data"]["web"] = [r for r in ddgs.text(target, max_results=10)]
-            print(f"{G}[+] Discovered {len(results['data']['web'])} Global Intel Nodes.{RES}")
-    except: pass
-
-    section_header("Apex Investigation Links")
-    results["data"]["links"] = get_apex_links(target, comp)
-    for n, l in results["data"]["links"].items(): print(f"    - {C}{n}{RES}: {l}")
-
-    results["relationships"] = analyze_relationships(target, results["data"])
-    if results["relationships"]:
-        section_header("Relationship Intelligence")
-        for r in results["relationships"]: print(f"    - {Y}{r['from']}{RES} --({r['type']})--> {C}{r['to']}{RES}")
-
-    save_intel(target, ", ".join(comp["types"]), results)
-    if report:
-        fn = f"ANONYINFO_INTEL_{re.sub(r'[^a-zA-Z0-9]', '_', target)}.json"
-        with open(fn, "w") as f: json.dump(results, f, indent=4)
-        print(f"\n{Y}[!] REPORT SAVED: {fn}{RES}")
-    print(f"\n{G}{B}MISSION ACCOMPLISHED.{RES}\n")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="AnonyInfo God-Mode")
-    parser.add_argument("target", help="Target Input")
-    parser.add_argument("--report", action="store_true", help="JSON Intel Report")
-    parser.add_argument("--nocache", action="store_true", help="Force fresh scan")
-    asyncio.run(run_tool(parser.parse_args().target, parser.parse_args().report, parser.parse_args().nocache))
+    main()
