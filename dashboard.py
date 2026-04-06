@@ -1,55 +1,72 @@
-from flask import Flask, jsonify, render_template
+from __future__ import annotations
+
+from flask import Flask, Response, jsonify
 from flask_cors import CORS
-from database import get_history, DB_FILE
-import sqlite3
-import json
+
+from anonyinfo_core.dossier import CaseBuilder
+from database import get_case, get_history, init_db
 
 app = Flask(__name__)
 CORS(app)
+case_builder = CaseBuilder()
+init_db()
 
-@app.route('/')
+
+@app.route("/")
 def index():
     return """
     <html>
     <head>
-        <title>AnonyInfo Intelligence Dashboard</title>
+        <title>AnonyInfo Case Dashboard</title>
         <style>
-            body { background: #0d0d0d; color: #00ff41; font-family: monospace; padding: 20px; }
-            .card { border: 1px solid #00ff41; padding: 15px; margin: 10px; border-radius: 5px; }
-            h1 { border-bottom: 2px solid #00ff41; }
-            .target { color: #fff; font-weight: bold; }
+            body { background: #0f172a; color: #e2e8f0; font-family: 'Segoe UI', sans-serif; padding: 24px; }
+            .card { border: 1px solid #334155; background: #111827; padding: 16px; margin: 10px 0; border-radius: 12px; }
+            a { color: #7dd3fc; text-decoration: none; }
+            .meta { color: #94a3b8; }
         </style>
     </head>
     <body>
-        <h1>ANONYINFO v7.0 :: MISSION DASHBOARD</h1>
-        <div id="results">Loading Intelligence from Vault...</div>
+        <h1>AnonyInfo Investigation Dashboard</h1>
+        <div id="results">Loading cases...</div>
         <script>
             fetch('/api/history').then(r => r.json()).then(data => {
                 let html = '';
                 data.forEach(item => {
                     html += `<div class="card">
-                        [${item[2]}] <span class="target">${item[0]}</span> (${item[1]})
+                        <div><strong>${item.target_input}</strong></div>
+                        <div class="meta">${item.case_id} | ${item.created_at}</div>
+                        <div>Entities: ${item.summary.entity_count} | Findings: ${item.summary.finding_count}</div>
+                        <div><a href="/api/case/${item.case_id}">JSON</a> | <a href="/case/${item.case_id}">HTML dossier</a></div>
                     </div>`;
                 });
-                document.getElementById('results').innerHTML = html;
+                document.getElementById('results').innerHTML = html || '<div class="card">No investigations yet.</div>';
             });
         </script>
     </body>
     </html>
     """
 
-@app.route('/api/history')
+
+@app.route("/api/history")
 def api_history():
     return jsonify(get_history())
 
-@app.route('/api/intel/<target>')
-def api_intel(target):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("SELECT data FROM intel_results WHERE target = ? ORDER BY timestamp DESC LIMIT 1", (target,))
-    row = c.fetchone()
-    conn.close()
-    return jsonify(json.loads(row[0]) if row else {})
 
-if __name__ == '__main__':
+@app.route("/api/case/<case_id>")
+def api_case(case_id):
+    case_record = get_case(case_id)
+    if not case_record:
+        return jsonify({})
+    return jsonify(case_builder.build(case_record))
+
+
+@app.route("/case/<case_id>")
+def view_case(case_id):
+    case_record = get_case(case_id)
+    if not case_record:
+        return Response("Case not found", status=404)
+    return Response(case_builder.render_html(case_builder.build(case_record)), mimetype="text/html")
+
+
+if __name__ == "__main__":
     app.run(port=5000)
