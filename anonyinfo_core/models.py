@@ -3,10 +3,15 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
+from datetime import datetime
 
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex[:12]}"
+
+
+def _utc_now() -> str:
+    return datetime.utcnow().isoformat() + "Z"
 
 
 @dataclass
@@ -17,10 +22,15 @@ class Entity:
     source: str = "seed"
     confidence: float = 1.0
     evidence: Optional[str] = None
+    aliases: List[str] = field(default_factory=list)
+    review_state: str = "unreviewed"
+    canonical_key: Optional[str] = None
+    discovered_at: str = field(default_factory=_utc_now)
+    provenance: Dict[str, Any] = field(default_factory=dict)
     entity_id: str = field(default_factory=lambda: _new_id("ent"))
 
     def key(self) -> str:
-        return f"{self.entity_type.lower()}::{self.value.lower()}"
+        return self.canonical_key or f"{self.entity_type.lower()}::{self.value.lower()}"
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -38,6 +48,11 @@ class Finding:
     severity: str = "info"
     confidence: float = 0.5
     evidence: Optional[str] = None
+    source_label: Optional[str] = None
+    source_url: Optional[str] = None
+    why: Optional[str] = None
+    discovered_at: str = field(default_factory=_utc_now)
+    tags: List[str] = field(default_factory=list)
     data: Dict[str, Any] = field(default_factory=dict)
     finding_id: str = field(default_factory=lambda: _new_id("fnd"))
 
@@ -53,6 +68,9 @@ class Relationship:
     source: str
     confidence: float = 0.5
     evidence: Optional[str] = None
+    reason: Optional[str] = None
+    analyst_reviewed: bool = False
+    discovered_at: str = field(default_factory=_utc_now)
     relationship_id: str = field(default_factory=lambda: _new_id("rel"))
 
     def dedupe_key(self) -> str:
@@ -69,6 +87,8 @@ class Artifact:
     label: str
     value: str
     entity_id: Optional[str] = None
+    source_url: Optional[str] = None
+    discovered_at: str = field(default_factory=_utc_now)
     metadata: Dict[str, Any] = field(default_factory=dict)
     artifact_id: str = field(default_factory=lambda: _new_id("art"))
 
@@ -79,6 +99,8 @@ class Artifact:
 @dataclass
 class ModuleResult:
     module: str
+    tier: str = "public_passive"
+    source_family: str = "public"
     entities: List[Entity] = field(default_factory=list)
     findings: List[Finding] = field(default_factory=list)
     relationships: List[Relationship] = field(default_factory=list)
@@ -92,6 +114,8 @@ class ModuleResult:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "module": self.module,
+            "tier": self.tier,
+            "source_family": self.source_family,
             "status": self.status,
             "error": self.error,
             "runtime_ms": self.runtime_ms,
@@ -117,6 +141,10 @@ class CaseRecord:
     relationships: List[Relationship]
     artifacts: List[Artifact]
     module_runs: List[ModuleResult]
+    notes: List[Dict[str, Any]] = field(default_factory=list)
+    watch_targets: List[Dict[str, Any]] = field(default_factory=list)
+    evidence_sources: List[Dict[str, Any]] = field(default_factory=list)
+    rerun_jobs: List[Dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -131,4 +159,8 @@ class CaseRecord:
             "relationships": [item.to_dict() for item in self.relationships],
             "artifacts": [item.to_dict() for item in self.artifacts],
             "module_runs": [item.to_dict() for item in self.module_runs],
+            "notes": self.notes,
+            "watch_targets": self.watch_targets,
+            "evidence_sources": self.evidence_sources,
+            "rerun_jobs": self.rerun_jobs,
         }

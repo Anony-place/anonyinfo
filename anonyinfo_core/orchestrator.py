@@ -31,27 +31,43 @@ class InvestigationOrchestrator:
     ) -> tuple[CaseRecord, dict]:
         seed_entities = self.normalizer.normalize(target_input)
         entities, base_relationships = self.resolver.resolve(seed_entities)
+        max_entities = 40 if depth == "standard" else 120
 
         all_entities = {entity.key(): entity for entity in entities}
+        entity_queue = list(all_entities.values())
         findings: List[Finding] = []
         relationships: List[Relationship] = list(base_relationships)
         artifacts: List[Artifact] = []
         module_runs: List[ModuleResult] = []
         seen_relationships = {item.dedupe_key() for item in relationships}
+        processed_pairs = set()
 
-        for entity in list(all_entities.values()):
+        index = 0
+        while index < len(entity_queue):
+            entity = entity_queue[index]
+            index += 1
             applicable = self.registry.applicable(entity, selected_modules)
             tasks = [
                 asyncio.create_task(self._run_module(module, entity, depth, use_cache))
                 for module in applicable
+                if (entity.key(), module.name) not in processed_pairs
             ]
+            for module in applicable:
+                processed_pairs.add((entity.key(), module.name))
             if not tasks:
                 continue
             results = await asyncio.gather(*tasks)
             for module_result in results:
                 module_runs.append(module_result)
                 for new_entity in module_result.entities:
-                    all_entities.setdefault(new_entity.key(), new_entity)
+                    existing = all_entities.get(new_entity.key())
+                    if existing:
+                        self._merge_entity(existing, new_entity)
+                    else:
+                        if len(all_entities) >= max_entities:
+                            continue
+                        all_entities[new_entity.key()] = new_entity
+                        entity_queue.append(new_entity)
                 findings.extend(module_result.findings)
                 artifacts.extend(module_result.artifacts)
                 for relationship in module_result.relationships:
@@ -62,6 +78,8 @@ class InvestigationOrchestrator:
         modules = sorted({run.module for run in module_runs})
         summary = self.scorer.summarize(list(all_entities.values()), findings, [run.to_dict() for run in module_runs])
         summary["best_leads"] = self.scorer.prioritize_leads(findings)
+        summary["watch_match_count"] = len(self._match_watch_targets(target_input, all_entities))
+        evidence_sources = self._collect_evidence_sources(findings, module_runs)
 
         case_record = CaseRecord(
             case_id=f"case_{uuid4().hex[:12]}",
@@ -75,8 +93,10 @@ class InvestigationOrchestrator:
             relationships=relationships,
             artifacts=artifacts,
             module_runs=module_runs,
+            evidence_sources=evidence_sources,
         )
         self.storage.save_case(case_record)
+        self._sync_watch_targets(target_input, list(all_entities.values()), case_record.case_id)
         dossier = self.case_builder.build(case_record)
         return case_record, dossier
 
@@ -98,7 +118,7 @@ class InvestigationOrchestrator:
 
     @staticmethod
     def _module_result_from_cache(module_name: str, payload: dict) -> ModuleResult:
-        module_result = ModuleResult(module=module_name)
+        module_result = ModuleResult(module=module_name, tier=payload.get("tier", "public_passive"), source_family=payload.get("source_family", "public"))
         module_result.status = payload.get("status", "success")
         module_result.error = payload.get("error")
         module_result.runtime_ms = payload.get("runtime_ms")
@@ -108,6 +128,49 @@ class InvestigationOrchestrator:
         module_result.relationships = [Relationship(**item) for item in payload.get("relationships", [])]
         module_result.artifacts = [Artifact(**item) for item in payload.get("artifacts", [])]
         return module_result
+
+    @staticmethod
+    def _merge_entity(existing: Entity, candidate: Entity) -> None:
+        existing.confidence = max(existing.confidence, candidate.confidence)
+        if candidate.source and candidate.source != existing.source and candidate.source not in existing.aliases:
+            existing.aliases.append(candidate.source)
+        for alias in candidate.aliases:
+            if alias not in existing.aliases:
+                existing.aliases.append(alias)
+        existing.provenance.update(candidate.provenance)
+
+    @staticmethod
+    def _collect_evidence_sources(findings: list[Finding], module_runs: list[ModuleResult]) -> list[dict]:
+        seen = {}
+        for finding in findings:
+            key = (finding.module, finding.source_label or finding.module, finding.source_url or "")
+            if key in seen:
+                continue
+            run = next((item for item in module_runs if item.module == finding.module), None)
+            seen[key] = {
+                "source_id": f"src_{uuid4().hex[:12]}",
+                "module": finding.module,
+                "source_label": finding.source_label or finding.module,
+                "source_url": finding.source_url,
+                "reputation": finding.confidence if not run else max(finding.confidence, 0.0),
+                "metadata": {"tier": getattr(run, "tier", None), "why": finding.why},
+            }
+        return list(seen.values())
+
+    def _sync_watch_targets(self, target_input: str, entities: list[Entity], case_id: str) -> None:
+        for entity in entities:
+            if entity.value.lower() == target_input.lower() or entity.source == "seed":
+                self.storage.add_watch_target(target_input, entity.entity_type, entity.value, last_case_id=case_id)
+                break
+
+    def _match_watch_targets(self, target_input: str, entity_map: dict[str, Entity]) -> list[dict]:
+        watch_targets = self.storage.get_watch_targets()
+        matches = []
+        keys = {entity.key() for entity in entity_map.values()}
+        for item in watch_targets:
+            if f"{item['normalized_type'].lower()}::{item['normalized_value'].lower()}" in keys:
+                matches.append(item)
+        return matches
 
 
 def dumps_case_json(dossier: dict) -> str:
